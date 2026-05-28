@@ -14,7 +14,7 @@
 14. [x] 做 MA 策略
 15. [x] 做 RSI 策略
 16. [x] 做统一回测指标整合
-17. [ ] 做多资产 PortfolioEnv
+17. [x] 做多资产 PortfolioEnv
 18. [ ] 训练 DQN / PPO
 19. [ ] 比较 RL 和传统策略
 20. [ ] 完善 Streamlit Web 正式版
@@ -54,4 +54,11 @@
 54. [x] 改进 yfinance 空数据/限流时的数据加载错误提示
 55. [x] 防止 run_app.py 被误作为 Streamlit Cloud 入口后递归启动多个端口
 56. [x] 为在线数据加载增加 Yahoo chart fallback，并避免云端误用本机 Clash 代理
-57. [ ] 写 README、PPT 和最终 AI 使用说明
+57. [x] 修复 LLM 主题股票筛选时可能出现的 Date 列错误，并增强芯片/半导体主题候选池
+58. [x] 增加 LLM 意图级自动分析工具，减少对本地缓存/下载确认的依赖
+59. [x] 修复空主项目数据下图表/历史工具读取 Ticker 列的问题
+60. [x] 增加 Tool Proposal 机制，让 Agent 可生成新工具草案供开发者审阅
+61. [x] 增加本地 Tool Promotion 流程，将审阅后的 proposal 合并为可部署工具
+62. [x] 增加本地 LLM 指令式工具合并入口，并支持当前本地运行环境刷新 generated 工具
+63. [x] 增加网页端 session-scoped 临时组合工具，允许安全复用既有工具配置
+64. [ ] 写 README、PPT 和最终 AI 使用说明

@@ -209,6 +209,31 @@ Detailed architecture:
   * Added a guard to `run_app.py` so it cannot recursively start extra Streamlit servers if accidentally selected as the Cloud entry file
   * Added a Yahoo chart API fallback for online data loading when yfinance returns empty data under rate limits
   * Changed proxy handling so Streamlit Cloud does not accidentally try to use the developer's local Clash proxy
+  * Hardened LLM stock screening against missing `Date` columns in downloaded history
+  * Added semiconductor/chip thematic seed tickers so broad prompts like "芯片科技股票" can screen a relevant universe instead of relying on exact symbol-name matching
+  * Added intent-level LLM workflows:
+    * `prepare_ticker_analysis()` automatically loads requested tickers, generates features, runs baselines, creates charts, and can push the dataset to app pages
+    * `analyze_theme_candidates()` automatically screens a theme, loads the shortlist, runs deeper analysis, and returns records for the final answer
+  * Updated the LLM system prompt so normal data refreshes are treated as internal analysis steps rather than user-facing confirmation chores
+  * Fixed chart/history tools when the main project dataset is empty but the current Chat workspace has data
+  * Added a safe Tool Proposal workflow:
+    * `propose_new_tool()` saves non-executable JSON proposals for missing tools
+    * `list_tool_proposals()` lists saved proposals
+    * Streamlit includes a Tool Proposals page for review
+    * Proposals are stored in the current runtime session and are not dynamically executed
+  * Added a local-only Tool Promotion workflow:
+    * Reviewed proposals can be promoted with `python scripts/promote_tool_proposal.py --proposal-file <proposal.json>`
+    * Promoted functions are written to `src/tools/generated_market_tools.py`
+    * Promoted schemas are written to `src/llm/generated_tool_schemas.py`
+    * `src/llm/assistant.py` loads generated tools on startup so they become available after commit/push/redeploy
+    * The promotion script validates one function definition, blocks risky names/imports, updates proposal status, and compiles generated files
+    * Local LLM-driven promotion is available only when `ENABLE_LOCAL_TOOL_PROMOTION=true`
+    * The assistant refreshes generated tool modules before building tool schemas and before executing tool calls, so promoted local tools can be used in the next LLM turn
+  * Added Web-safe temporary composite tools:
+    * `register_temp_composite_tool()` creates session-scoped JSON wrappers around approved base tools
+    * Temporary tools support preset arguments, simple record filters, sorting, selected columns, and row limits
+    * They are exposed to the LLM in the current Web session without writing Python code or affecting other sessions
+    * Tool Proposals page now shows temporary composite tools registered in the session
 
 * [x] LLM natural-language analysis prototype
 
@@ -253,17 +278,24 @@ Detailed architecture:
   * Added Ollama local model discovery
   * Added optional LLM/tool-call logs under `reports/logs/`
 
+* [x] Multi-asset PortfolioEnv
+
+  * Implemented `src/environment/portfolio_env.py`
+  * Supports multiple assets with overlapping dates and continuous non-negative portfolio weights
+  * Includes cash allocation, transaction cost, turnover tracking, portfolio value, log-return reward, and optional risk penalty
+  * Observation combines normalized market features with current portfolio state
+  * Added `run_portfolio_env_smoke_test()` to the tool layer for lightweight validation from the app/LLM side
+
 ---
 
 ### In Progress
 
-* [ ] Multi-asset PortfolioEnv
+* [ ] RL model training
 
 ---
 
 ### Future Tasks
 
-* [ ] Multi-asset PortfolioEnv
 * [ ] RL model training
 * [ ] Strategy comparison and performance analysis
 * [ ] Streamlit Web UI refinement

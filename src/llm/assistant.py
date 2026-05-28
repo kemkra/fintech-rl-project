@@ -1,3 +1,4 @@
+import importlib
 import json
 import time
 from datetime import datetime
@@ -6,6 +7,19 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 from src.tools import market_tools
+
+try:
+    from src.llm.generated_tool_schemas import GENERATED_TOOL_SCHEMAS
+    from src.tools.generated_market_tools import (
+        GENERATED_CHAT_WORKSPACE_TOOL_NAMES,
+        GENERATED_TOOL_FUNCTIONS,
+        GENERATED_WRITE_TOOL_NAMES,
+    )
+except Exception:
+    GENERATED_CHAT_WORKSPACE_TOOL_NAMES = set()
+    GENERATED_TOOL_FUNCTIONS = {}
+    GENERATED_TOOL_SCHEMAS = []
+    GENERATED_WRITE_TOOL_NAMES = set()
 
 
 PROVIDER_PRESETS = {
@@ -40,20 +54,25 @@ LOGS_DIR = Path("reports/logs")
 
 SYSTEM_PROMPT = """
 You are a financial data analysis assistant for a student project.
-Use tools when the user asks about dataset status, ticker metrics, EDA results,
-baseline strategy comparison, figures, or ticker history.
+Your job is to deliver the final analysis result, not to make the user manage data files.
+Treat cached/raw/processed data as an internal working medium. Do not repeatedly ask for permission to download or refresh ordinary market data when write tools are enabled.
+Use tools when the user asks about dataset status, ticker metrics, EDA results, baseline strategy comparison, figures, or ticker history.
 If the user asks what local data is available, call get_local_data_inventory so the answer includes both processed data and raw CSV files.
-If the user asks for a chart or visual, call create_ticker_price_chart only after identifying a ticker.
-If the user asks to discover promising stocks, find stocks worth researching, or screen buy candidates, call screen_stock_candidates first. Then, if deeper analysis is needed and write tools are enabled, call load_shortlist_for_analysis for the shortlist.
+If the user asks for a chart, visual, recent performance, baseline strategy results, or a comparison for known tickers, use prepare_ticker_analysis when write tools are enabled.
+If the user asks to discover promising stocks, find stocks worth researching, screen buy candidates, or analyze a theme/industry, use analyze_theme_candidates when write tools are enabled.
+If write tools are disabled, use read-only tools and explain that automatic data preparation is unavailable.
+If the user's request cannot be handled well with the existing tools, call propose_new_tool to create a tool proposal for developer review. Do not claim the proposed tool has been implemented or executed.
+If the user asks what new tools have been proposed, call list_tool_proposals.
+If the user asks for a temporary Web-session tool that can be built safely from existing tools, call register_temp_composite_tool. These temporary tools are JSON-configured wrappers around approved base tools, not arbitrary Python code.
+If the user explicitly asks to merge/promote a reviewed proposal into the local toolset, call get_tool_promotion_status first. If local promotion is enabled, call promote_tool_proposal_local. If disabled, explain the local command/environment variable.
 If the user uses a company name instead of a ticker, propose one or more likely ticker candidates and call validate_ticker_candidates to verify them.
 If the user asks to find possible stock tickers, call search_us_symbols before validation.
 Use the selected_ticker returned by validate_ticker_candidates in later tools.
 If write tools are enabled and a missing ticker is validated, refresh the current Chat workspace data directly instead of asking for another confirmation.
 If validation fails because of network/rate limits, ask the user to confirm the ticker or retry later instead of pretending the ticker was verified.
-Use the latest date available in the local dataset for "recent" or "last year" analysis.
-If data is missing and write tools are enabled, call refresh_llm_workspace_ticker or refresh_llm_workspace_data before generating analysis.
+For "recent", "last year", or similar requests, choose a reasonable default lookback period such as 1y unless the user specifies dates.
+Only ask follow-up questions when the request is genuinely ambiguous, very broad/expensive, requests real trading instructions, or needs paid/private credentials.
 If the user wants to inspect the AI Chat workspace data in other app pages, call push_llm_workspace_to_app_pages.
-If data is missing and write tools are disabled, explain that the user can enable workspace refresh tools to refresh data.
 Explain results clearly and mention whether outputs are based on the main project data or the current Chat workspace.
 Do not provide investment advice. Frame conclusions as historical analysis.
 """.strip()
@@ -105,6 +124,37 @@ TOOL_SCHEMAS = [
         "function": {
             "name": "get_active_analysis_dataset_status",
             "description": "Get which processed dataset is currently shown by the Web app pages.",
+            "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_tool_proposals",
+            "description": "List saved tool proposals that were generated for developer review.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "limit": {"type": "integer", "minimum": 1, "maximum": 200, "default": 50},
+                    "status": {"type": "string", "description": "Optional proposal status filter, such as proposed."},
+                },
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_tool_promotion_status",
+            "description": "Check whether local developer tool promotion is enabled for this running app.",
+            "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_temp_composite_tools",
+            "description": "List temporary session-scoped composite tools registered in the current Web/runtime session.",
             "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
         },
     },
@@ -245,7 +295,7 @@ TOOL_SCHEMAS = [
         "type": "function",
         "function": {
             "name": "screen_stock_candidates",
-            "description": "Screen a broad US stock universe using recent historical price/volume metrics and return a shortlist for further research. This is not investment advice.",
+            "description": "Screen a broad US stock universe using recent historical price/volume metrics and return a shortlist for further research. Use automatically for broad candidate-discovery questions when write tools are available. This is not investment advice.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -368,6 +418,22 @@ TOOL_SCHEMAS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "run_portfolio_env_smoke_test",
+            "description": "Run a lightweight smoke test for the multi-asset PortfolioEnv using equal-weight actions.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "tickers": {"type": "array", "items": {"type": "string"}},
+                    "data_scope": {"type": "string", "enum": ["auto", "project", "workspace"], "default": "auto"},
+                    "max_steps": {"type": "integer", "minimum": 1, "maximum": 50, "default": 5},
+                },
+                "additionalProperties": False,
+            },
+        },
+    },
 ]
 
 
@@ -453,8 +519,61 @@ WRITE_TOOL_SCHEMAS = [
     {
         "type": "function",
         "function": {
+            "name": "prepare_ticker_analysis",
+            "description": "Automatically prepare workspace data for known tickers, generate features, run baseline strategies, optionally create charts, and optionally push the dataset to app pages. Use this instead of asking the user whether to download missing ordinary market data.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "tickers": {"type": "array", "items": {"type": "string"}},
+                    "start_date": {"type": "string", "description": "Optional YYYY-MM-DD start date."},
+                    "end_date": {"type": "string", "description": "Optional YYYY-MM-DD end date."},
+                    "lookback_period": {"type": "string", "default": "1y", "description": "Used when dates are omitted, such as 6mo, 1y, 2y, or 5y."},
+                    "include_chart": {"type": "boolean", "default": True},
+                    "push_to_app_pages": {"type": "boolean", "default": True},
+                    "run_baseline_after": {"type": "boolean", "default": True},
+                    "data_source": {"type": "string", "enum": ["auto", "download"], "default": "auto"},
+                    "use_proxy": {"type": "boolean", "default": False},
+                },
+                "required": ["tickers"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "analyze_theme_candidates",
+            "description": "Automatically screen a theme or industry, load the shortlist into the current Chat workspace, run feature engineering and baselines, create charts, and return records for final analysis. Use this for questions like promising chip stocks or AI-related stock candidates without asking the user to manage data refreshes.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Theme, industry, or search phrase, such as semiconductor, chip technology, AI hardware, banks, or renewable energy."},
+                    "lookback_period": {"type": "string", "default": "1y"},
+                    "max_candidates": {"type": "integer", "minimum": 10, "maximum": 300, "default": 80},
+                    "shortlist_size": {"type": "integer", "minimum": 1, "maximum": 20, "default": 5},
+                    "min_avg_volume": {"type": "number", "default": 500000},
+                    "min_price": {"type": "number", "default": 5},
+                    "sort_by": {
+                        "type": "string",
+                        "enum": ["risk_adjusted_return", "total_return", "annualized_return", "low_drawdown", "volume"],
+                        "default": "risk_adjusted_return",
+                    },
+                    "include_chart": {"type": "boolean", "default": True},
+                    "push_to_app_pages": {"type": "boolean", "default": True},
+                    "run_baseline_after": {"type": "boolean", "default": True},
+                    "data_source": {"type": "string", "enum": ["auto", "download"], "default": "auto"},
+                    "use_proxy": {"type": "boolean", "default": False},
+                },
+                "required": ["query"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "refresh_llm_workspace_data",
-            "description": "Load market data into the current Chat workspace and regenerate workspace features without modifying the main project dataset. Raw files are stored in the active runtime cache.",
+            "description": "Load market data into the current Chat workspace and regenerate workspace features without modifying the main project dataset. Use automatically when lower-level data refresh is needed. Raw files are stored in the active runtime cache.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -465,13 +584,13 @@ WRITE_TOOL_SCHEMAS = [
                     },
                     "start_date": {"type": "string"},
                     "end_date": {"type": "string"},
-                    "use_proxy": {"type": "boolean", "default": True},
+                    "use_proxy": {"type": "boolean", "default": False},
                     "run_baseline_after": {"type": "boolean", "default": True},
                     "data_source": {
                         "type": "string",
                         "enum": ["auto", "download"],
                         "default": "auto",
-                        "description": "auto uses valid shared raw files first, then downloads if needed.",
+                        "description": "auto uses valid runtime raw files first, then downloads if needed.",
                     },
                 },
                 "required": ["tickers", "start_date", "end_date"],
@@ -483,14 +602,14 @@ WRITE_TOOL_SCHEMAS = [
         "type": "function",
         "function": {
             "name": "load_shortlist_for_analysis",
-            "description": "Load a screened shortlist into the current Chat workspace, generate features, and optionally run baseline strategies.",
+            "description": "Load a screened shortlist into the current Chat workspace, generate features, and optionally run baseline strategies. Use automatically after candidate screening when deeper analysis is needed.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "tickers": {"type": "array", "items": {"type": "string"}},
                     "start_date": {"type": "string"},
                     "end_date": {"type": "string"},
-                    "use_proxy": {"type": "boolean", "default": True},
+                    "use_proxy": {"type": "boolean", "default": False},
                     "data_source": {"type": "string", "enum": ["auto", "download"], "default": "auto"},
                     "run_baseline_after": {"type": "boolean", "default": True},
                 },
@@ -503,14 +622,14 @@ WRITE_TOOL_SCHEMAS = [
         "type": "function",
         "function": {
             "name": "refresh_llm_workspace_ticker",
-            "description": "Load one validated ticker into the current Chat workspace and regenerate workspace features without modifying the main project dataset.",
+            "description": "Load one validated ticker into the current Chat workspace and regenerate workspace features without modifying the main project dataset. Use automatically when a requested ticker is missing.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "ticker": {"type": "string", "description": "Validated ticker symbol, such as TSLA."},
                     "start_date": {"type": "string"},
                     "end_date": {"type": "string"},
-                    "use_proxy": {"type": "boolean", "default": True},
+                    "use_proxy": {"type": "boolean", "default": False},
                     "run_baseline_after": {"type": "boolean", "default": True},
                     "data_source": {
                         "type": "string",
@@ -551,6 +670,111 @@ WRITE_TOOL_SCHEMAS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "propose_new_tool",
+            "description": "Create a non-executable tool proposal when the current toolset cannot satisfy the user's request well. This saves a JSON proposal for developer review; it does not dynamically run or install code.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "tool_name": {"type": "string", "description": "Proposed Python function name."},
+                    "user_need": {"type": "string", "description": "What user need this tool would address."},
+                    "inputs": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Suggested input parameters and brief meanings.",
+                    },
+                    "outputs": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Suggested output fields or artifacts.",
+                    },
+                    "required_data": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Data needed by the tool.",
+                    },
+                    "implementation_plan": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Implementation steps.",
+                    },
+                    "safety_notes": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Safety, cost, privacy, or deployment notes.",
+                    },
+                    "suggested_python_code": {"type": "string"},
+                    "suggested_tool_schema": {"type": "object"},
+                },
+                "required": ["tool_name", "user_need"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "promote_tool_proposal_local",
+            "description": "Local developer-only command that promotes a reviewed proposal into generated tool files. It is disabled unless ENABLE_LOCAL_TOOL_PROMOTION=true.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "proposal_id": {"type": "string", "description": "Proposal id to find under runtime/report proposal directories."},
+                    "proposal_file": {"type": "string", "description": "Direct path to a proposal JSON file."},
+                },
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "register_temp_composite_tool",
+            "description": "Register a temporary session-scoped tool by safely composing an approved base tool with preset arguments, filters, sorting, selected columns, and a row limit. This does not write or execute Python code.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "tool_name": {"type": "string"},
+                    "base_tool": {
+                        "type": "string",
+                        "enum": [
+                            "screen_stock_candidates",
+                            "get_strategy_comparison",
+                            "get_eda_summary",
+                            "get_data_quality_summary",
+                            "get_ticker_history",
+                            "get_buy_hold_metrics",
+                            "get_ma_metrics",
+                            "get_rsi_metrics",
+                        ],
+                    },
+                    "description": {"type": "string"},
+                    "preset_arguments": {"type": "object"},
+                    "filters": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "column": {"type": "string"},
+                                "operator": {"type": "string", "enum": [">", ">=", "<", "<=", "==", "!=", "contains", "gt", "gte", "lt", "lte", "ne"]},
+                                "value": {},
+                            },
+                            "required": ["column", "operator", "value"],
+                            "additionalProperties": False,
+                        },
+                    },
+                    "select_columns": {"type": "array", "items": {"type": "string"}},
+                    "sort_by": {"type": "string"},
+                    "sort_ascending": {"type": "boolean", "default": False},
+                    "limit": {"type": "integer", "minimum": 1, "maximum": 200, "default": 20},
+                },
+                "required": ["tool_name", "base_tool"],
+                "additionalProperties": False,
+            },
+        },
+    },
 ]
 
 
@@ -561,6 +785,9 @@ TOOL_FUNCTIONS = {
     "get_local_data_inventory": market_tools.get_local_data_inventory,
     "get_llm_workspace_status": market_tools.get_llm_workspace_status,
     "get_active_analysis_dataset_status": market_tools.get_active_analysis_dataset_status,
+    "list_tool_proposals": market_tools.list_tool_proposals,
+    "list_temp_composite_tools": market_tools.list_temp_composite_tools,
+    "get_tool_promotion_status": market_tools.get_tool_promotion_status,
     "search_us_symbols": market_tools.search_us_symbols,
     "validate_ticker_candidates": market_tools.validate_ticker_candidates,
     "inspect_local_raw_ticker": market_tools.inspect_local_raw_ticker,
@@ -578,16 +805,43 @@ TOOL_FUNCTIONS = {
     "get_rsi_metrics": market_tools.get_rsi_metrics,
     "get_rsi_equity_curve": market_tools.get_rsi_equity_curve,
     "get_strategy_comparison": market_tools.get_strategy_comparison,
+    "run_portfolio_env_smoke_test": market_tools.run_portfolio_env_smoke_test,
     "run_buy_hold_baseline": market_tools.run_buy_hold_baseline,
     "run_ma_baseline": market_tools.run_ma_baseline,
     "run_rsi_baseline": market_tools.run_rsi_baseline,
     "run_strategy_comparison": market_tools.run_strategy_comparison,
+    "prepare_ticker_analysis": market_tools.prepare_ticker_analysis,
+    "analyze_theme_candidates": market_tools.analyze_theme_candidates,
     "refresh_llm_workspace_data": market_tools.refresh_llm_workspace_data,
     "refresh_llm_workspace_ticker": market_tools.refresh_llm_workspace_ticker,
     "load_shortlist_for_analysis": market_tools.load_shortlist_for_analysis,
     "push_llm_workspace_to_app_pages": market_tools.push_llm_workspace_to_app_pages,
     "reset_app_pages_to_project_dataset": market_tools.reset_app_pages_to_project_dataset,
+    "propose_new_tool": market_tools.propose_new_tool,
+    "promote_tool_proposal_local": market_tools.promote_tool_proposal_local,
+    "register_temp_composite_tool": market_tools.register_temp_composite_tool,
 }
+TOOL_FUNCTIONS.update(GENERATED_TOOL_FUNCTIONS)
+
+
+def refresh_generated_tool_registry():
+    global GENERATED_CHAT_WORKSPACE_TOOL_NAMES, GENERATED_TOOL_FUNCTIONS, GENERATED_TOOL_SCHEMAS, GENERATED_WRITE_TOOL_NAMES
+
+    try:
+        import src.llm.generated_tool_schemas as generated_schema_module
+        import src.tools.generated_market_tools as generated_tool_module
+
+        generated_schema_module = importlib.reload(generated_schema_module)
+        generated_tool_module = importlib.reload(generated_tool_module)
+    except Exception:
+        return False
+
+    GENERATED_CHAT_WORKSPACE_TOOL_NAMES = generated_tool_module.GENERATED_CHAT_WORKSPACE_TOOL_NAMES
+    GENERATED_TOOL_FUNCTIONS = generated_tool_module.GENERATED_TOOL_FUNCTIONS
+    GENERATED_TOOL_SCHEMAS = generated_schema_module.GENERATED_TOOL_SCHEMAS
+    GENERATED_WRITE_TOOL_NAMES = generated_tool_module.GENERATED_WRITE_TOOL_NAMES
+    TOOL_FUNCTIONS.update(GENERATED_TOOL_FUNCTIONS)
+    return True
 
 
 def get_provider_config(provider_name, custom_base_url=None, custom_model=None):
@@ -600,26 +854,44 @@ def get_provider_config(provider_name, custom_base_url=None, custom_model=None):
 
 
 def build_tool_schemas(allow_write_tools=False):
+    refresh_generated_tool_registry()
+    generated_schemas = [
+        schema for schema in GENERATED_TOOL_SCHEMAS
+        if allow_write_tools or schema.get("function", {}).get("name") not in GENERATED_WRITE_TOOL_NAMES
+    ]
+    temp_schemas = market_tools.get_temp_composite_tool_schemas(allow_write_tools=allow_write_tools)
+    read_schemas = TOOL_SCHEMAS + generated_schemas + temp_schemas
     if allow_write_tools:
-        return TOOL_SCHEMAS + WRITE_TOOL_SCHEMAS
-    return TOOL_SCHEMAS
+        return read_schemas + WRITE_TOOL_SCHEMAS
+    return read_schemas
 
 
 def execute_tool_call(name, arguments, allow_write_tools=False, chat_id=None):
+    refresh_generated_tool_registry()
     write_tool_names = {
         "run_buy_hold_baseline",
         "run_ma_baseline",
         "run_rsi_baseline",
         "run_strategy_comparison",
+        "run_portfolio_env_smoke_test",
         "screen_stock_candidates",
+        "prepare_ticker_analysis",
+        "analyze_theme_candidates",
         "refresh_llm_workspace_data",
         "refresh_llm_workspace_ticker",
         "load_shortlist_for_analysis",
         "push_llm_workspace_to_app_pages",
         "reset_app_pages_to_project_dataset",
+        "propose_new_tool",
+        "promote_tool_proposal_local",
+        "register_temp_composite_tool",
     }
+    write_tool_names.update(GENERATED_WRITE_TOOL_NAMES)
     if name in write_tool_names and not allow_write_tools:
         return {"error": f"Tool {name} is disabled because write tools are not allowed."}
+
+    if name not in TOOL_FUNCTIONS and market_tools.is_temp_composite_tool(name):
+        return market_tools.execute_temp_composite_tool(name, arguments=arguments, chat_id=chat_id)
 
     if name not in TOOL_FUNCTIONS:
         return {"error": f"Unknown tool: {name}"}
@@ -640,14 +912,20 @@ def execute_tool_call(name, arguments, allow_write_tools=False, chat_id=None):
         "run_ma_baseline",
         "run_rsi_baseline",
         "run_strategy_comparison",
+        "run_portfolio_env_smoke_test",
         "screen_stock_candidates",
+        "prepare_ticker_analysis",
+        "analyze_theme_candidates",
         "refresh_llm_workspace_data",
         "refresh_llm_workspace_ticker",
         "load_shortlist_for_analysis",
         "push_llm_workspace_to_app_pages",
+        "propose_new_tool",
+        "register_temp_composite_tool",
         "clear_llm_workspace",
         "merge_llm_workspace_to_project",
     }
+    chat_workspace_tool_names.update(GENERATED_CHAT_WORKSPACE_TOOL_NAMES)
     if name in chat_workspace_tool_names and chat_id and "chat_id" not in arguments:
         arguments = dict(arguments)
         arguments["chat_id"] = chat_id

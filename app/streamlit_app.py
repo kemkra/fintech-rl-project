@@ -979,6 +979,9 @@ def page_tool_api_preview():
         """
 get_dataset_status()
 get_runtime_storage_status()
+list_tool_proposals(limit=50, status=None)
+list_temp_composite_tools()
+get_tool_promotion_status()
 list_local_raw_data()
 get_local_data_inventory()
 get_llm_workspace_status(chat_id=None)
@@ -993,6 +996,11 @@ get_ticker_history(ticker, start_date=None, end_date=None, max_rows=500)
 create_ticker_price_chart(ticker, start_date=None, end_date=None, months=12)
 get_ticker_metrics(ticker)
 screen_stock_candidates(query="", max_candidates=300, shortlist_size=10, lookback_period="1y")
+prepare_ticker_analysis(tickers, start_date=None, end_date=None, lookback_period="1y")
+analyze_theme_candidates(query, lookback_period="1y", shortlist_size=5)
+propose_new_tool(tool_name, user_need, inputs=None, outputs=None)
+register_temp_composite_tool(tool_name, base_tool, preset_arguments=None, filters=None)
+promote_tool_proposal_local(proposal_id=None, proposal_file=None)
 load_shortlist_for_analysis(tickers, start_date, end_date, chat_id=None)
 refresh_llm_workspace_data(tickers, start_date, end_date, data_source="auto", use_proxy=True, chat_id=None)
 refresh_llm_workspace_ticker(ticker, start_date, end_date, data_source="auto", use_proxy=True, chat_id=None)
@@ -1011,12 +1019,58 @@ get_rsi_metrics(ticker=None)
 get_rsi_equity_curve(ticker, max_rows=500)
 run_strategy_comparison(data_scope="project")
 get_strategy_comparison(ticker=None, data_scope="auto")
+run_portfolio_env_smoke_test(tickers=None, data_scope="auto", max_steps=5)
         """.strip(),
         language="python",
     )
 
     status = market_tools.get_dataset_status()
     st.json(status)
+
+
+def page_tool_proposals():
+    st.subheader("Tool Proposals")
+    st.write("LLM-generated tool ideas are saved here for developer review. They are not executed automatically.")
+    st.caption("Local developer promotion command: python scripts/promote_tool_proposal.py --proposal-file <proposal.json>")
+    promotion_status = market_tools.get_tool_promotion_status()
+    if promotion_status["enabled"]:
+        st.success("Local LLM-driven promotion is enabled for this runtime.")
+    else:
+        st.info("Local LLM-driven promotion is disabled. Set ENABLE_LOCAL_TOOL_PROMOTION=true when running locally to allow it.")
+
+    proposals = market_tools.list_tool_proposals(limit=100)
+    temp_tools = market_tools.list_temp_composite_tools()
+    with st.expander("Temporary composite tools in this session", expanded=False):
+        if temp_tools["records"]:
+            st.dataframe(pd.DataFrame(temp_tools["records"]), use_container_width=True)
+        else:
+            st.info("No temporary composite tools registered yet.")
+
+    st.caption(f"Directory: {proposals['directory']}")
+    if not proposals["records"]:
+        st.info("No tool proposals yet.")
+        return
+
+    for proposal in proposals["records"]:
+        title = f"{proposal.get('display_name') or proposal.get('tool_name')} | {proposal.get('created_at')}"
+        with st.expander(title, expanded=False):
+            st.write(proposal.get("user_need", ""))
+            col1, col2 = st.columns(2)
+            col1.write("**Inputs**")
+            col1.write(proposal.get("inputs", []))
+            col2.write("**Outputs**")
+            col2.write(proposal.get("outputs", []))
+            st.write("**Required data**")
+            st.write(proposal.get("required_data", []))
+            st.write("**Implementation plan**")
+            st.write(proposal.get("implementation_plan", []))
+            st.write("**Safety notes**")
+            st.write(proposal.get("safety_notes", []))
+            if proposal.get("suggested_python_code"):
+                st.code(proposal["suggested_python_code"], language="python")
+            if proposal.get("suggested_tool_schema"):
+                st.json(proposal["suggested_tool_schema"])
+            st.caption(f"File: {proposal.get('file_path')}")
 
 
 st.title("Intelligent Financial Market Analysis")
@@ -1038,6 +1092,7 @@ with st.sidebar:
             "Baseline Results",
             "AI Assistant",
             "LLM Tool API Preview",
+            "Tool Proposals",
         ],
     )
 
@@ -1051,8 +1106,10 @@ elif page == "Baseline Results":
     page_baselines()
 elif page == "AI Assistant":
     page_ai_assistant()
-else:
+elif page == "LLM Tool API Preview":
     page_tool_api_preview()
+else:
+    page_tool_proposals()
 
 st.divider()
 st.caption("Baseline strategies, portfolio environment, and RL results will be added as saved artifacts.")

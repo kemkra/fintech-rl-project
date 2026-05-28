@@ -31,6 +31,9 @@ def get_runtime_paths(session_id=None, root=None):
         "reports_dir": session_dir / "reports",
         "results_dir": session_dir / "reports" / "results",
         "figures_dir": session_dir / "reports" / "figures",
+        "logs_dir": session_dir / "reports" / "logs",
+        "tool_proposals_dir": session_dir / "reports" / "tool_proposals",
+        "temp_tools_file": session_dir / "config" / "temp_composite_tools.json",
         "chat_workspaces_dir": session_dir / "workspaces" / "chats",
     }
 
@@ -46,6 +49,8 @@ def ensure_runtime(session_id=None, root=None):
         "reference_dir",
         "results_dir",
         "figures_dir",
+        "logs_dir",
+        "tool_proposals_dir",
         "chat_workspaces_dir",
     ]:
         paths[key].mkdir(parents=True, exist_ok=True)

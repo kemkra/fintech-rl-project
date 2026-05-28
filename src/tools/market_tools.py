@@ -1,7 +1,9 @@
 from datetime import datetime
 import json
+import os
 from pathlib import Path
 import shutil
+from types import SimpleNamespace
 from urllib.request import Request, urlopen
 
 import matplotlib.pyplot as plt
@@ -41,12 +43,18 @@ RSI_EQUITY_FILE = Path("reports/results/rsi_equity_curves.csv")
 RSI_METRICS_FILE = Path("reports/results/rsi_metrics.csv")
 STRATEGY_COMPARISON_FILE = Path("reports/results/strategy_comparison.csv")
 FIGURES_DIR = Path("reports/figures")
+TOOL_PROPOSALS_DIR = Path("reports/tool_proposals")
+TEMP_COMPOSITE_TOOLS_FILE = Path("config/temp_composite_tools.json")
 DEFAULT_TICKERS = ["AAPL", "MSFT", "GOOGL", "AMZN", "TSLA", "JPM", "BAC", "GS", "SPY", "QQQ"]
 SCREENER_SEED_TICKERS = [
     "AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "TSLA", "AVGO", "LLY", "JPM",
     "V", "UNH", "XOM", "MA", "COST", "HD", "NFLX", "WMT", "PG", "JNJ",
     "BAC", "AMD", "CRM", "ORCL", "ADBE", "KO", "PEP", "CSCO", "MCD", "INTC",
     "SPY", "QQQ", "DIA", "IWM",
+]
+SEMICONDUCTOR_SEED_TICKERS = [
+    "NVDA", "AMD", "AVGO", "TSM", "ASML", "QCOM", "INTC", "MU", "ARM", "AMAT",
+    "LRCX", "KLAC", "TXN", "ADI", "MRVL", "MCHP", "NXPI", "ON", "SMCI", "MPWR",
 ]
 SUPPORTED_INTERVAL = "1d"
 RUNTIME_SESSION_ID = None
@@ -59,7 +67,7 @@ def configure_runtime_storage(session_id=None, root=None):
     global PROCESSED_DATA_FILE, RAW_DATA_DIR, CHAT_WORKSPACES_DIR, LLM_WORKSPACE_DIR
     global EDA_SUMMARY_FILE, DATA_QUALITY_FILE, BUY_HOLD_EQUITY_FILE, BUY_HOLD_METRICS_FILE
     global MA_EQUITY_FILE, MA_METRICS_FILE, RSI_EQUITY_FILE, RSI_METRICS_FILE
-    global STRATEGY_COMPARISON_FILE, FIGURES_DIR, RUNTIME_SESSION_ID, RUNTIME_DB_FILE
+    global STRATEGY_COMPARISON_FILE, FIGURES_DIR, TOOL_PROPOSALS_DIR, TEMP_COMPOSITE_TOOLS_FILE, RUNTIME_SESSION_ID, RUNTIME_DB_FILE
 
     paths = runtime_store.ensure_runtime(session_id=session_id, root=root)
     CONFIG_DIR = paths["config_dir"]
@@ -80,6 +88,8 @@ def configure_runtime_storage(session_id=None, root=None):
     RSI_METRICS_FILE = paths["results_dir"] / "rsi_metrics.csv"
     STRATEGY_COMPARISON_FILE = paths["results_dir"] / "strategy_comparison.csv"
     FIGURES_DIR = paths["figures_dir"]
+    TOOL_PROPOSALS_DIR = paths["tool_proposals_dir"]
+    TEMP_COMPOSITE_TOOLS_FILE = paths["temp_tools_file"]
     RUNTIME_SESSION_ID = paths["session_id"]
     RUNTIME_DB_FILE = paths["db_file"]
     return {key: str(value) if isinstance(value, Path) else value for key, value in paths.items()}
@@ -393,6 +403,95 @@ def _select_screener_universe(symbols, max_candidates, query="", include_etfs=Fa
     return selected.drop_duplicates(subset=["yfinance_symbol"]).head(max_candidates).reset_index(drop=True)
 
 
+def _theme_seed_tickers(query):
+    query_text = str(query or "").strip().lower()
+    semiconductor_terms = [
+        "chip",
+        "chips",
+        "semiconductor",
+        "semiconductors",
+        "ai hardware",
+        "gpu",
+        "芯片",
+        "半导体",
+        "晶圆",
+        "英伟达",
+        "台积电",
+    ]
+    if any(term in query_text for term in semiconductor_terms):
+        return SEMICONDUCTOR_SEED_TICKERS
+    return []
+
+
+def _symbol_lookup_from_rows(rows):
+    lookup = {}
+    for row in rows:
+        ticker = row.get("yfinance_symbol") or row.get("symbol")
+        if ticker:
+            lookup[normalize_ticker(ticker)] = row
+    return lookup
+
+
+def _normalize_screening_history_frame(df, ticker):
+    if df is None or df.empty:
+        return pd.DataFrame()
+
+    frame = df.copy()
+    if isinstance(frame.columns, pd.MultiIndex):
+        frame.columns = frame.columns.get_level_values(0)
+    if "Date" not in frame.columns:
+        frame = frame.reset_index()
+    frame.columns = [str(column).strip().title() for column in frame.columns]
+
+    date_column = None
+    for candidate in ["Date", "Datetime", "Timestamp", "Index"]:
+        if candidate in frame.columns:
+            date_column = candidate
+            break
+    if date_column is None:
+        return pd.DataFrame()
+    frame = frame.rename(columns={date_column: "Date"})
+
+    if "Close" not in frame.columns:
+        return pd.DataFrame()
+
+    if "Volume" not in frame.columns:
+        frame["Volume"] = np.nan
+
+    keep_columns = [column for column in ["Date", "Open", "High", "Low", "Close", "Volume"] if column in frame.columns]
+    frame = frame[keep_columns].copy()
+    frame["Date"] = pd.to_datetime(frame["Date"], errors="coerce")
+    for column in ["Open", "High", "Low", "Close", "Volume"]:
+        if column in frame.columns:
+            frame[column] = pd.to_numeric(frame[column], errors="coerce")
+    frame = frame.dropna(subset=["Date", "Close"])
+    if frame.empty:
+        return pd.DataFrame()
+
+    frame["Ticker"] = normalize_ticker(ticker)
+    return frame.sort_values("Date").reset_index(drop=True)
+
+
+def _download_screening_history_yahoo_chart(tickers, period):
+    from src.data.download_data import download_ticker_data_yahoo_chart
+
+    end_date = pd.Timestamp.today().normalize().date().isoformat()
+    start_date = _period_to_start_timestamp(period).date().isoformat()
+    frames = []
+    for ticker in tickers:
+        try:
+            frame = download_ticker_data_yahoo_chart(ticker, start_date=start_date, end_date=end_date, interval="1d")
+        except Exception:
+            continue
+        frame = _normalize_screening_history_frame(frame, ticker)
+        if not frame.empty:
+            frames.append(frame)
+
+    if not frames:
+        return pd.DataFrame()
+    return pd.concat(frames, axis=0, ignore_index=True)
+
+
 def _download_screening_history(tickers, period, chunk_size=80):
     frames = []
     for index in range(0, len(tickers), chunk_size):
@@ -420,17 +519,21 @@ def _download_screening_history(tickers, period, chunk_size=80):
                     ticker_df = history[ticker].copy()
                 else:
                     ticker_df = history.copy()
-                if ticker_df.empty or "Close" not in ticker_df.columns:
+                ticker_df = _normalize_screening_history_frame(ticker_df, ticker)
+                if ticker_df.empty:
                     continue
-                ticker_df = ticker_df.reset_index()
-                ticker_df["Ticker"] = ticker
                 frames.append(ticker_df)
             except Exception:
                 continue
 
-    if not frames:
+    yfinance_history = pd.concat(frames, axis=0, ignore_index=True) if frames else pd.DataFrame()
+    downloaded_tickers = set(yfinance_history["Ticker"].unique().tolist()) if "Ticker" in yfinance_history.columns else set()
+    fallback_tickers = [ticker for ticker in tickers if ticker not in downloaded_tickers]
+    fallback_history = _download_screening_history_yahoo_chart(fallback_tickers, period) if fallback_tickers else pd.DataFrame()
+    history_frames = [frame for frame in [yfinance_history, fallback_history] if not frame.empty]
+    if not history_frames:
         return pd.DataFrame()
-    return pd.concat(frames, axis=0, ignore_index=True)
+    return pd.concat(history_frames, axis=0, ignore_index=True)
 
 
 def _period_to_start_timestamp(period):
@@ -489,6 +592,10 @@ def _load_local_screening_history(tickers, period):
 
 
 def _calculate_screening_metrics(history_df, symbol_lookup):
+    required_columns = {"Ticker", "Date", "Close"}
+    if history_df.empty or not required_columns.issubset(history_df.columns):
+        return pd.DataFrame()
+
     records = []
     for ticker, ticker_df in history_df.groupby("Ticker"):
         ticker_df = ticker_df.sort_values("Date").copy()
@@ -555,7 +662,8 @@ def screen_stock_candidates(
         include_etfs=include_etfs,
         exchanges=exchanges,
     )
-    tickers = selected["yfinance_symbol"].tolist()
+    theme_tickers = _theme_seed_tickers(query)
+    tickers = merge_ticker_lists(selected["yfinance_symbol"].tolist() if "yfinance_symbol" in selected.columns else [], theme_tickers)
     if not tickers:
         return {
             "available": False,
@@ -581,7 +689,9 @@ def screen_stock_candidates(
             "shortlist": [],
         }
 
-    symbol_lookup = selected.set_index("yfinance_symbol").to_dict(orient="index")
+    symbol_lookup = _symbol_lookup_from_rows(_json_records(symbols))
+    if not selected.empty and "yfinance_symbol" in selected.columns:
+        symbol_lookup.update(selected.set_index("yfinance_symbol").to_dict(orient="index"))
     metrics = _calculate_screening_metrics(history, symbol_lookup)
     if metrics.empty:
         return {
@@ -659,6 +769,142 @@ def load_shortlist_for_analysis(
     )
     result["loaded_shortlist"] = tickers
     return result
+
+
+def _default_analysis_dates(lookback_period="1y"):
+    end_date = pd.Timestamp.today().normalize().date().isoformat()
+    start_date = _period_to_start_timestamp(lookback_period).date().isoformat()
+    return start_date, end_date
+
+
+def prepare_ticker_analysis(
+    tickers,
+    start_date=None,
+    end_date=None,
+    lookback_period="1y",
+    include_chart=True,
+    push_to_app_pages=True,
+    run_baseline_after=True,
+    data_source="auto",
+    use_proxy=False,
+    chat_id=None,
+):
+    tickers = merge_ticker_lists(tickers)
+    if not tickers:
+        raise ValueError("tickers cannot be empty.")
+
+    if not start_date or not end_date:
+        default_start, default_end = _default_analysis_dates(lookback_period)
+        start_date = start_date or default_start
+        end_date = end_date or default_end
+
+    refresh_result = refresh_llm_workspace_data(
+        tickers=tickers,
+        start_date=start_date,
+        end_date=end_date,
+        use_proxy=use_proxy,
+        run_baseline_after=run_baseline_after,
+        data_source=data_source,
+        chat_id=chat_id,
+    )
+
+    workspace_status = get_llm_workspace_status(chat_id=chat_id)
+    comparison = get_strategy_comparison(data_scope="workspace", chat_id=chat_id) if run_baseline_after else {
+        "available": False,
+        "records": [],
+    }
+
+    charts = []
+    if include_chart:
+        for ticker in tickers[:3]:
+            chart = create_ticker_price_chart(
+                ticker=ticker,
+                start_date=start_date,
+                end_date=end_date,
+                include_ma=True,
+                chat_id=chat_id,
+            )
+            charts.append(chart)
+
+    push_result = None
+    if push_to_app_pages:
+        push_result = push_llm_workspace_to_app_pages(
+            note="Automatically prepared from an AI analysis request.",
+            chat_id=chat_id,
+        )
+
+    return {
+        "available": True,
+        "workflow": "prepare_ticker_analysis",
+        "tickers": tickers,
+        "start_date": start_date,
+        "end_date": end_date,
+        "refresh_result": refresh_result,
+        "workspace_status": workspace_status,
+        "strategy_comparison": comparison,
+        "charts": charts,
+        "pushed_to_app_pages": push_result,
+        "message": "Prepared analysis data automatically for the requested tickers.",
+    }
+
+
+def analyze_theme_candidates(
+    query,
+    lookback_period="1y",
+    max_candidates=80,
+    shortlist_size=5,
+    min_avg_volume=500_000,
+    min_price=5,
+    sort_by="risk_adjusted_return",
+    include_chart=True,
+    push_to_app_pages=True,
+    run_baseline_after=True,
+    data_source="auto",
+    use_proxy=False,
+    chat_id=None,
+):
+    screening = screen_stock_candidates(
+        query=query,
+        max_candidates=max_candidates,
+        shortlist_size=shortlist_size,
+        lookback_period=lookback_period,
+        min_avg_volume=min_avg_volume,
+        min_price=min_price,
+        sort_by=sort_by,
+        chat_id=chat_id,
+    )
+    shortlist = screening.get("shortlist_tickers", [])
+    if not shortlist:
+        return {
+            "available": False,
+            "workflow": "analyze_theme_candidates",
+            "query": query,
+            "screening": screening,
+            "message": "No shortlist could be built for this theme.",
+        }
+
+    start_date, end_date = _default_analysis_dates(lookback_period)
+    analysis = prepare_ticker_analysis(
+        tickers=shortlist,
+        start_date=start_date,
+        end_date=end_date,
+        include_chart=include_chart,
+        push_to_app_pages=push_to_app_pages,
+        run_baseline_after=run_baseline_after,
+        data_source=data_source,
+        use_proxy=use_proxy,
+        chat_id=chat_id,
+    )
+
+    return {
+        "available": True,
+        "workflow": "analyze_theme_candidates",
+        "query": query,
+        "lookback_period": lookback_period,
+        "screening": screening,
+        "analysis": analysis,
+        "message": "Screened a thematic universe and prepared the shortlist for deeper analysis.",
+    }
 
 
 def validate_ticker_candidates(query, candidates, validation_mode="local_first"):
@@ -908,6 +1154,340 @@ def _json_records(df, limit=None):
         if pd.api.types.is_datetime64_any_dtype(output[column]):
             output[column] = output[column].dt.strftime("%Y-%m-%d")
     return output.to_dict(orient="records")
+
+
+def _slugify_tool_name(text):
+    text = str(text or "new_tool").strip().lower()
+    chars = []
+    previous_underscore = False
+    for char in text:
+        if char.isalnum():
+            chars.append(char)
+            previous_underscore = False
+        elif not previous_underscore:
+            chars.append("_")
+            previous_underscore = True
+    slug = "".join(chars).strip("_")
+    return slug or "new_tool"
+
+
+def propose_new_tool(
+    tool_name,
+    user_need,
+    inputs=None,
+    outputs=None,
+    required_data=None,
+    implementation_plan=None,
+    safety_notes=None,
+    suggested_python_code=None,
+    suggested_tool_schema=None,
+    chat_id=None,
+):
+    proposal_id = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{_slugify_tool_name(tool_name)}"
+    TOOL_PROPOSALS_DIR.mkdir(parents=True, exist_ok=True)
+    proposal_file = TOOL_PROPOSALS_DIR / f"{proposal_id}.json"
+    proposal = {
+        "proposal_id": proposal_id,
+        "status": "proposed",
+        "tool_name": _slugify_tool_name(tool_name),
+        "display_name": str(tool_name or "").strip() or "new_tool",
+        "user_need": user_need,
+        "inputs": inputs or [],
+        "outputs": outputs or [],
+        "required_data": required_data or [],
+        "implementation_plan": implementation_plan or [],
+        "safety_notes": safety_notes or [],
+        "suggested_python_code": suggested_python_code or "",
+        "suggested_tool_schema": suggested_tool_schema or {},
+        "chat_id": normalize_chat_id(chat_id) if chat_id else None,
+        "created_at": datetime.now().isoformat(timespec="seconds"),
+        "file_path": str(proposal_file),
+    }
+    with proposal_file.open("w", encoding="utf-8") as file:
+        json.dump(proposal, file, ensure_ascii=False, indent=2)
+    return {
+        "available": True,
+        "proposal_id": proposal_id,
+        "tool_name": proposal["tool_name"],
+        "file_path": str(proposal_file),
+        "proposal": proposal,
+        "message": "Tool proposal saved for developer review. It was not executed or dynamically loaded.",
+    }
+
+
+def list_tool_proposals(limit=50, status=None):
+    TOOL_PROPOSALS_DIR.mkdir(parents=True, exist_ok=True)
+    records = []
+    for path in sorted(TOOL_PROPOSALS_DIR.glob("*.json"), reverse=True):
+        try:
+            with path.open("r", encoding="utf-8") as file:
+                proposal = json.load(file)
+        except Exception:
+            continue
+        if status and proposal.get("status") != status:
+            continue
+        proposal["file_path"] = str(path)
+        records.append(proposal)
+        if len(records) >= int(limit):
+            break
+    return {
+        "available": bool(records),
+        "directory": str(TOOL_PROPOSALS_DIR),
+        "count": len(records),
+        "records": records,
+    }
+
+
+TEMP_COMPOSITE_BASE_TOOL_NAMES = {
+    "screen_stock_candidates",
+    "get_strategy_comparison",
+    "get_eda_summary",
+    "get_data_quality_summary",
+    "get_ticker_history",
+    "get_buy_hold_metrics",
+    "get_ma_metrics",
+    "get_rsi_metrics",
+}
+TEMP_COMPOSITE_WRITE_BASE_TOOLS = {"screen_stock_candidates"}
+
+
+def _get_temp_composite_base_tools():
+    return {
+        "screen_stock_candidates": screen_stock_candidates,
+        "get_strategy_comparison": get_strategy_comparison,
+        "get_eda_summary": get_eda_summary,
+        "get_data_quality_summary": get_data_quality_summary,
+        "get_ticker_history": get_ticker_history,
+        "get_buy_hold_metrics": get_buy_hold_metrics,
+        "get_ma_metrics": get_ma_metrics,
+        "get_rsi_metrics": get_rsi_metrics,
+    }
+
+
+def _load_temp_composite_tools():
+    if not TEMP_COMPOSITE_TOOLS_FILE.exists():
+        return {}
+    try:
+        with TEMP_COMPOSITE_TOOLS_FILE.open("r", encoding="utf-8") as file:
+            payload = json.load(file)
+    except Exception:
+        return {}
+    tools = payload.get("tools", {})
+    return tools if isinstance(tools, dict) else {}
+
+
+def _save_temp_composite_tools(tools):
+    TEMP_COMPOSITE_TOOLS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    with TEMP_COMPOSITE_TOOLS_FILE.open("w", encoding="utf-8") as file:
+        json.dump({"tools": tools}, file, ensure_ascii=False, indent=2)
+
+
+def _apply_record_filters(records, filters=None, select_columns=None, sort_by=None, sort_ascending=False, limit=None):
+    if not records:
+        return []
+    df = pd.DataFrame(records)
+    filters = filters or []
+    for rule in filters:
+        column = rule.get("column")
+        operator = str(rule.get("operator", "==")).strip()
+        value = rule.get("value")
+        if column not in df.columns:
+            continue
+        series = pd.to_numeric(df[column], errors="coerce")
+        compare_value = pd.to_numeric(pd.Series([value]), errors="coerce").iloc[0]
+        if pd.isna(compare_value):
+            series = df[column].astype(str)
+            compare_value = str(value)
+        if operator in {">", "gt"}:
+            df = df[series > compare_value]
+        elif operator in {">=", "gte"}:
+            df = df[series >= compare_value]
+        elif operator in {"<", "lt"}:
+            df = df[series < compare_value]
+        elif operator in {"<=", "lte"}:
+            df = df[series <= compare_value]
+        elif operator in {"!=", "ne"}:
+            df = df[series != compare_value]
+        elif operator in {"contains"}:
+            df = df[series.astype(str).str.contains(str(compare_value), case=False, na=False)]
+        else:
+            df = df[series == compare_value]
+
+    if sort_by and sort_by in df.columns:
+        df = df.sort_values(sort_by, ascending=bool(sort_ascending), na_position="last")
+    if select_columns:
+        columns = [column for column in select_columns if column in df.columns]
+        if columns:
+            df = df[columns]
+    if limit:
+        df = df.head(int(limit))
+    return _json_records(df)
+
+
+def register_temp_composite_tool(
+    tool_name,
+    base_tool,
+    description=None,
+    preset_arguments=None,
+    filters=None,
+    select_columns=None,
+    sort_by=None,
+    sort_ascending=False,
+    limit=20,
+    chat_id=None,
+):
+    tool_name = _slugify_tool_name(tool_name)
+    if base_tool not in TEMP_COMPOSITE_BASE_TOOL_NAMES:
+        raise ValueError(f"base_tool must be one of: {sorted(TEMP_COMPOSITE_BASE_TOOL_NAMES)}")
+
+    tools = _load_temp_composite_tools()
+    tool_config = {
+        "tool_name": tool_name,
+        "base_tool": base_tool,
+        "description": description or f"Temporary composite tool based on {base_tool}.",
+        "preset_arguments": preset_arguments or {},
+        "filters": filters or [],
+        "select_columns": select_columns or [],
+        "sort_by": sort_by,
+        "sort_ascending": bool(sort_ascending),
+        "limit": int(limit) if limit else None,
+        "chat_id": normalize_chat_id(chat_id) if chat_id else None,
+        "created_at": datetime.now().isoformat(timespec="seconds"),
+        "write_tool": base_tool in TEMP_COMPOSITE_WRITE_BASE_TOOLS,
+    }
+    tools[tool_name] = tool_config
+    _save_temp_composite_tools(tools)
+    return {
+        "registered": True,
+        "tool_name": tool_name,
+        "file_path": str(TEMP_COMPOSITE_TOOLS_FILE),
+        "tool": tool_config,
+        "message": "Temporary composite tool registered for this Web session. It does not execute arbitrary Python code.",
+    }
+
+
+def list_temp_composite_tools():
+    tools = _load_temp_composite_tools()
+    return {
+        "available": bool(tools),
+        "file_path": str(TEMP_COMPOSITE_TOOLS_FILE),
+        "count": len(tools),
+        "records": list(tools.values()),
+    }
+
+
+def is_temp_composite_tool(tool_name):
+    return _slugify_tool_name(tool_name) in _load_temp_composite_tools()
+
+
+def get_temp_composite_tool_schemas(allow_write_tools=False):
+    schemas = []
+    for tool in _load_temp_composite_tools().values():
+        if tool.get("write_tool") and not allow_write_tools:
+            continue
+        schemas.append(
+            {
+                "type": "function",
+                "function": {
+                    "name": tool["tool_name"],
+                    "description": tool.get("description") or f"Temporary composite tool based on {tool['base_tool']}.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "arguments": {
+                                "type": "object",
+                                "description": "Optional runtime arguments merged into the preset arguments.",
+                            }
+                        },
+                        "additionalProperties": False,
+                    },
+                },
+            }
+        )
+    return schemas
+
+
+def execute_temp_composite_tool(tool_name, arguments=None, chat_id=None):
+    tool_name = _slugify_tool_name(tool_name)
+    tools = _load_temp_composite_tools()
+    if tool_name not in tools:
+        return {"available": False, "message": f"Temporary composite tool not found: {tool_name}"}
+
+    tool = tools[tool_name]
+    base_tool = tool["base_tool"]
+    base_function = _get_temp_composite_base_tools()[base_tool]
+    merged_arguments = dict(tool.get("preset_arguments") or {})
+    runtime_arguments = {}
+    if isinstance(arguments, dict):
+        runtime_arguments = arguments.get("arguments", arguments)
+        if isinstance(runtime_arguments, dict):
+            merged_arguments.update(runtime_arguments)
+    if chat_id and base_tool in {"screen_stock_candidates", "get_strategy_comparison", "get_ticker_history", "get_buy_hold_metrics", "get_ma_metrics", "get_rsi_metrics"}:
+        merged_arguments.setdefault("chat_id", chat_id)
+
+    result = base_function(**merged_arguments)
+    records = result.get("records") if isinstance(result, dict) else None
+    filtered_records = _apply_record_filters(
+        records=records or [],
+        filters=tool.get("filters"),
+        select_columns=tool.get("select_columns"),
+        sort_by=tool.get("sort_by"),
+        sort_ascending=tool.get("sort_ascending"),
+        limit=tool.get("limit"),
+    )
+    output = {
+        "available": True,
+        "tool_name": tool_name,
+        "base_tool": base_tool,
+        "base_arguments": merged_arguments,
+        "base_result": result,
+        "records": filtered_records,
+        "record_count": len(filtered_records),
+        "message": "Temporary composite tool executed using a restricted base tool and JSON configuration.",
+    }
+    return output
+
+
+def get_tool_promotion_status():
+    enabled = os.getenv("ENABLE_LOCAL_TOOL_PROMOTION", "false").lower() in {"1", "true", "yes"}
+    return {
+        "enabled": enabled,
+        "mode": "local_developer_only",
+        "environment_variable": "ENABLE_LOCAL_TOOL_PROMOTION",
+        "tool_proposals_dir": str(TOOL_PROPOSALS_DIR),
+        "message": (
+            "Local tool promotion is enabled. Reviewed proposals may be merged into generated tool files."
+            if enabled
+            else "Local tool promotion is disabled. Set ENABLE_LOCAL_TOOL_PROMOTION=true when running locally to allow promotion."
+        ),
+    }
+
+
+def promote_tool_proposal_local(proposal_id=None, proposal_file=None):
+    status = get_tool_promotion_status()
+    if not status["enabled"]:
+        return {
+            "promoted": False,
+            "status": status,
+            "message": "Promotion is disabled. This protects deployed Web apps from modifying code.",
+        }
+    if not proposal_id and not proposal_file:
+        raise ValueError("proposal_id or proposal_file is required.")
+
+    from scripts import promote_tool_proposal as promotion
+
+    args = SimpleNamespace(proposal_id=proposal_id, proposal_file=proposal_file)
+    proposal = promotion.load_proposal(args)
+    tool_name = promotion.promote(proposal)
+    return {
+        "promoted": True,
+        "tool_name": tool_name,
+        "proposal_id": proposal.get("proposal_id"),
+        "proposal_file": proposal.get("_proposal_file"),
+        "generated_tools_file": str(promotion.GENERATED_TOOLS_FILE),
+        "generated_schemas_file": str(promotion.GENERATED_SCHEMAS_FILE),
+        "message": "Tool promoted locally. It will be available to the LLM after the generated registry is refreshed; commit/push/redeploy to publish it.",
+    }
 
 
 def get_dataset_status():
@@ -1166,7 +1746,7 @@ def get_ticker_history(ticker, start_date=None, end_date=None, columns=None, max
     ticker = normalize_ticker(ticker)
     df = _read_processed_data()
     data_source = "project"
-    filtered = df[df["Ticker"] == ticker].copy()
+    filtered = df[df["Ticker"] == ticker].copy() if not df.empty and "Ticker" in df.columns else pd.DataFrame()
     if filtered.empty:
         workspace_df = _read_workspace_processed_data(chat_id)
         filtered = workspace_df[workspace_df["Ticker"] == ticker].copy() if not workspace_df.empty else pd.DataFrame()
@@ -1198,7 +1778,7 @@ def create_ticker_price_chart(ticker, start_date=None, end_date=None, months=12,
     df = _read_processed_data()
     data_source = "project"
     figures_dir = FIGURES_DIR
-    ticker_df = df[df["Ticker"] == ticker].copy()
+    ticker_df = df[df["Ticker"] == ticker].copy() if not df.empty and "Ticker" in df.columns else pd.DataFrame()
     if ticker_df.empty:
         workspace_df = _read_workspace_processed_data(chat_id)
         ticker_df = workspace_df[workspace_df["Ticker"] == ticker].copy() if not workspace_df.empty else pd.DataFrame()
@@ -1737,6 +2317,40 @@ def get_strategy_comparison(ticker=None, data_scope="auto", chat_id=None):
         "available": False,
         "message": "Strategy comparison is not available. Run run_strategy_comparison first.",
         "records": [],
+    }
+
+
+def run_portfolio_env_smoke_test(tickers=None, data_scope="auto", chat_id=None, max_steps=5):
+    from src.environment.portfolio_env import PortfolioEnv
+
+    df, selected_tickers, source = _build_strategy_data(tickers=tickers, data_scope=data_scope, chat_id=chat_id)
+    if len(selected_tickers) < 2:
+        raise ValueError("PortfolioEnv smoke test requires at least two tickers.")
+
+    env = PortfolioEnv(df, tickers=selected_tickers)
+    observation = env.reset()
+    done = False
+    steps = 0
+    total_reward = 0.0
+    last_info = {}
+    while not done and steps < int(max_steps):
+        action = np.ones(env.action_size)
+        observation, reward, done, last_info = env.step(action)
+        total_reward += reward
+        steps += 1
+
+    return {
+        "available": True,
+        "data_scope": source,
+        "tickers": env.tickers,
+        "action_size": env.action_size,
+        "observation_size": int(len(observation)),
+        "steps": int(steps),
+        "done": bool(done),
+        "total_reward": float(total_reward),
+        "last_portfolio_value": float(last_info.get("portfolio_value", env.portfolio_value)),
+        "last_turnover": float(last_info.get("turnover", env.turnover)),
+        "message": "PortfolioEnv smoke test completed with equal-weight actions.",
     }
 
 
