@@ -17,6 +17,8 @@ The AI Assistant is a natural-language interface on top of the project's local a
 
 The assistant is not an investment advisor. Its answers should be treated as historical data analysis and educational output.
 
+Developer-only tool preview and proposal pages are hidden by default in the sidebar. Enable `Developer tools` only when inspecting tool schemas, temporary tools, or reviewed tool proposals.
+
 ## 2. Provider Setup
 
 The app supports OpenAI-compatible providers:

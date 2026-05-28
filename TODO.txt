@@ -70,3 +70,6 @@
 70. [x] 完成项目体检：补 README、更新架构文档、检查入口/依赖/部署说明
 71. [x] 写最终报告和 AI Assistant 使用说明
 72. [x] 最终端到端验收测试
+73. [x] 修复 AI Assistant 跨页面状态保留和 Chat workspace 连续训练上下文问题
+74. [x] 将开发者工具页默认隐藏，简化普通 Web 使用界面
+75. [x] 增加 LLM pending job 自动刷新，并防止 Portfolio CEM 后续确认时误用非 workspace 股票

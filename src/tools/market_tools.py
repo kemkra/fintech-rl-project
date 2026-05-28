@@ -2087,6 +2087,8 @@ def _build_strategy_data(tickers=None, data_scope="auto", chat_id=None):
             if workspace_df.empty:
                 raise ValueError("No AI chat workspace processed data available.")
             return workspace_df, sorted(workspace_df["Ticker"].unique()), "chat_workspace"
+        if data_scope == "auto" and chat_id and not workspace_df.empty:
+            return workspace_df, sorted(workspace_df["Ticker"].unique()), "chat_workspace"
         if project_df.empty:
             raise ValueError("No project processed data available.")
         return project_df, sorted(project_df["Ticker"].unique()), "project"
@@ -2101,12 +2103,22 @@ def _build_strategy_data(tickers=None, data_scope="auto", chat_id=None):
         project_rows = project_df[project_df["Ticker"] == ticker].copy() if not project_df.empty else pd.DataFrame()
         workspace_rows = workspace_df[workspace_df["Ticker"] == ticker].copy() if not workspace_df.empty else pd.DataFrame()
 
-        if data_scope in {"auto", "project"} and not project_rows.empty:
-            frames.append(project_rows)
-            source_rows.append("project")
-        elif data_scope in {"auto", "workspace"} and not workspace_rows.empty:
+        if data_scope == "workspace" and not workspace_rows.empty:
             frames.append(workspace_rows)
             source_rows.append("chat_workspace")
+        elif data_scope == "project" and not project_rows.empty:
+            frames.append(project_rows)
+            source_rows.append("project")
+        elif data_scope == "auto" and not workspace_rows.empty:
+            frames.append(workspace_rows)
+            source_rows.append("chat_workspace")
+        elif data_scope == "auto" and not project_rows.empty:
+            frames.append(project_rows)
+            source_rows.append("project")
+        elif data_scope == "workspace":
+            raise ValueError(f"No workspace data found for ticker: {ticker}")
+        elif data_scope == "project":
+            raise ValueError(f"No project data found for ticker: {ticker}")
         else:
             raise ValueError(f"No data found for ticker: {ticker}")
 
@@ -2558,6 +2570,23 @@ def run_portfolio_cem_training(
 ):
     from src.training.portfolio_cem import run_portfolio_cem_training as train
 
+    data_scope = str(data_scope).lower()
+    requested_tickers = merge_ticker_lists(tickers) if tickers else None
+    workspace_override = None
+    if requested_tickers and chat_id and data_scope in {"auto", "workspace"}:
+        workspace_df = _read_workspace_processed_data(chat_id)
+        workspace_tickers = sorted(workspace_df["Ticker"].unique()) if not workspace_df.empty and "Ticker" in workspace_df.columns else []
+        missing_from_workspace = [ticker for ticker in requested_tickers if ticker not in workspace_tickers]
+        if len(workspace_tickers) >= 2 and missing_from_workspace:
+            workspace_override = {
+                "requested_tickers": requested_tickers,
+                "used_workspace_tickers": workspace_tickers,
+                "ignored_tickers_not_in_workspace": missing_from_workspace,
+                "reason": "Requested tickers did not match the current Chat workspace universe, so Portfolio CEM used the prepared workspace tickers instead.",
+            }
+            tickers = workspace_tickers
+            data_scope = "workspace"
+
     df, selected_tickers, source = _build_strategy_data(tickers=tickers, data_scope=data_scope, chat_id=chat_id)
     if len(selected_tickers) < 2:
         raise ValueError("Portfolio CEM training requires at least two tickers.")
@@ -2593,6 +2622,8 @@ def run_portfolio_cem_training(
     )
     result["data_scope"] = source
     result["training_data_file"] = str(temp_data_file)
+    if workspace_override:
+        result["workspace_universe_override"] = workspace_override
     comparison_scope = "workspace" if source == "chat_workspace" else "project"
     result["comparison"] = run_strategy_comparison(data_scope=comparison_scope, chat_id=chat_id)
     return result

@@ -9,6 +9,7 @@ from uuid import uuid4
 
 import pandas as pd
 import streamlit as st
+import streamlit.components.v1 as components
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -223,6 +224,66 @@ def save_llm_preferences(preferences):
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     with LLM_PREFERENCES_FILE.open("w", encoding="utf-8") as file:
         json.dump(preferences, file, ensure_ascii=False, indent=2)
+
+
+def initialize_llm_ui_state(preferences):
+    provider_name = preferences.get("provider_name", "Alibaba Bailian")
+    if provider_name not in PROVIDER_PRESETS:
+        provider_name = "Alibaba Bailian"
+
+    preset = PROVIDER_PRESETS[provider_name]
+    defaults = {
+        "llm_provider_name": provider_name,
+        "llm_base_url": preferences.get("base_url") or preset["base_url"],
+        "llm_model": preferences.get("model") or preset["model"],
+        "llm_api_key": preferences.get("api_key", "") if preferences.get("remember_api_key") else "",
+        "llm_remember_api_key": bool(preferences.get("remember_api_key")),
+        "llm_save_debug_log": True,
+        "llm_limit_tool_rounds": False,
+        "llm_max_tool_rounds": 5,
+        "llm_limit_total_runtime": False,
+        "llm_max_elapsed_seconds": 180,
+        "llm_request_timeout": 120,
+    }
+    for key, value in defaults.items():
+        st.session_state.setdefault(key, value)
+    st.session_state.setdefault("llm_previous_provider_name", st.session_state["llm_provider_name"])
+
+
+def prepare_llm_widget_state():
+    widget_keys = {
+        "llm_widget_base_url": "llm_base_url",
+        "llm_widget_api_key": "llm_api_key",
+        "llm_widget_remember_api_key": "llm_remember_api_key",
+        "llm_widget_save_debug_log": "llm_save_debug_log",
+        "llm_widget_limit_tool_rounds": "llm_limit_tool_rounds",
+        "llm_widget_max_tool_rounds": "llm_max_tool_rounds",
+        "llm_widget_limit_total_runtime": "llm_limit_total_runtime",
+        "llm_widget_max_elapsed_seconds": "llm_max_elapsed_seconds",
+        "llm_widget_request_timeout": "llm_request_timeout",
+    }
+    for widget_key, state_key in widget_keys.items():
+        st.session_state.setdefault(widget_key, st.session_state.get(state_key))
+
+
+def apply_provider_change_if_needed(preferences):
+    provider_name = st.session_state.get("llm_provider_name", "Alibaba Bailian")
+    previous_provider = st.session_state.get("llm_previous_provider_name")
+    if provider_name == previous_provider:
+        return
+
+    preset = PROVIDER_PRESETS[provider_name]
+    use_saved_preferences = provider_name == preferences.get("provider_name")
+    st.session_state["llm_base_url"] = (preferences.get("base_url") if use_saved_preferences else None) or preset["base_url"]
+    st.session_state["llm_model"] = (preferences.get("model") if use_saved_preferences else None) or preset["model"]
+    if use_saved_preferences and preferences.get("remember_api_key"):
+        st.session_state["llm_api_key"] = preferences.get("api_key", "")
+    elif provider_name in {"Ollama Local", "LM Studio Local"}:
+        st.session_state.setdefault("llm_api_key", "")
+    st.session_state["llm_previous_provider_name"] = provider_name
+    st.session_state["llm_widget_base_url"] = st.session_state["llm_base_url"]
+    st.session_state["llm_widget_model_text"] = st.session_state["llm_model"]
+    st.session_state["llm_widget_api_key"] = st.session_state.get("llm_api_key", "")
 
 
 def make_chat_title(index):
@@ -829,6 +890,8 @@ def page_ai_assistant():
 
     init_llm_chats()
     preferences = load_llm_preferences()
+    initialize_llm_ui_state(preferences)
+    prepare_llm_widget_state()
     chats = st.session_state["llm_chats"]
     chat_column, main_column = st.columns([1.1, 3.2], gap="large")
 
@@ -872,32 +935,33 @@ def page_ai_assistant():
             st.error(f"LLM call failed: {job_status.get('error', 'Unknown error')}")
 
         provider_names = list(PROVIDER_PRESETS.keys())
-        preferred_provider = preferences.get("provider_name", "Alibaba Bailian")
+        preferred_provider = st.session_state.get("llm_provider_name", preferences.get("provider_name", "Alibaba Bailian"))
         provider_index = provider_names.index(preferred_provider) if preferred_provider in provider_names else 0
         provider_name = st.selectbox("Provider", provider_names, index=provider_index)
+        st.session_state["llm_provider_name"] = provider_name
+        apply_provider_change_if_needed(preferences)
+        provider_name = st.session_state["llm_provider_name"]
         preset = PROVIDER_PRESETS[provider_name]
         use_saved_preferences = provider_name == preferences.get("provider_name")
 
         col1, col2 = st.columns(2)
-        preferred_base_url = preferences.get("base_url") if use_saved_preferences else None
-        preferred_base_url = preferred_base_url or preset["base_url"]
-        base_url = col1.text_input("Base URL", value=preferred_base_url)
-        remembered_api_key = preferences.get("api_key", "") if use_saved_preferences else ""
+        base_url = col1.text_input("Base URL", key="llm_widget_base_url")
+        st.session_state["llm_base_url"] = base_url
         if provider_name in {"Ollama Local", "LM Studio Local"}:
-            api_key = col2.text_input("API Key (optional for local providers)", value=remembered_api_key, type="password")
+            api_key = col2.text_input("API Key (optional for local providers)", type="password", key="llm_widget_api_key")
         else:
-            api_key = col2.text_input("API Key", value=remembered_api_key, type="password")
+            api_key = col2.text_input("API Key", type="password", key="llm_widget_api_key")
+        st.session_state["llm_api_key"] = api_key
 
         if provider_name == "Ollama Local":
             ollama_models = cached_ollama_models(base_url)
             if ollama_models["available"] and ollama_models["models"]:
-                preferred_model = preferences.get("model") if use_saved_preferences else None
-                preferred_model = preferred_model or preset["model"]
+                preferred_model = st.session_state.get("llm_model") or ((preferences.get("model") if use_saved_preferences else None) or preset["model"])
                 model_index = ollama_models["models"].index(preferred_model) if preferred_model in ollama_models["models"] else 0
-                model = st.selectbox("Model", ollama_models["models"], index=model_index)
+                model = st.selectbox("Model", ollama_models["models"], index=model_index, key="llm_widget_model_select")
             else:
-                preferred_model = preferences.get("model") if use_saved_preferences else None
-                model = st.text_input("Model", value=preferred_model or preset["model"])
+                st.session_state.setdefault("llm_widget_model_text", st.session_state.get("llm_model"))
+                model = st.text_input("Model", key="llm_widget_model_text")
                 st.caption(f"Ollama model discovery failed: {ollama_models['error']}")
         else:
             state_key = get_model_state_key(provider_name, base_url)
@@ -911,56 +975,63 @@ def page_ai_assistant():
             model_result = st.session_state.get(state_key)
             if model_result and model_result["available"]:
                 model_options = model_result["models"]
-                preferred_model = preferences.get("model") if use_saved_preferences else None
-                preferred_model = preferred_model or preset["model"]
+                preferred_model = st.session_state.get("llm_model") or ((preferences.get("model") if use_saved_preferences else None) or preset["model"])
                 default_index = model_options.index(preferred_model) if preferred_model in model_options else 0
-                model = st.selectbox("Model", model_options, index=default_index)
+                model = st.selectbox("Model", model_options, index=default_index, key="llm_widget_model_select")
                 col_hint.caption("Model list loaded from the provider's OpenAI-compatible /models endpoint.")
             elif model_result and model_result["error"]:
-                preferred_model = preferences.get("model") if use_saved_preferences else None
-                model = st.text_input("Model", value=preferred_model or preset["model"])
+                st.session_state.setdefault("llm_widget_model_text", st.session_state.get("llm_model"))
+                model = st.text_input("Model", key="llm_widget_model_text")
                 col_hint.caption(f"Model discovery unavailable: {model_result['error']}")
             else:
-                preferred_model = preferences.get("model") if use_saved_preferences else None
-                model = st.text_input("Model", value=preferred_model or preset["model"])
+                st.session_state.setdefault("llm_widget_model_text", st.session_state.get("llm_model"))
+                model = st.text_input("Model", key="llm_widget_model_text")
+        st.session_state["llm_model"] = model
 
         with st.expander("Advanced execution settings", expanded=False):
-            limit_tool_rounds = st.checkbox("Limit tool-call rounds", value=False)
+            limit_tool_rounds = st.checkbox("Limit tool-call rounds", key="llm_widget_limit_tool_rounds")
+            st.session_state["llm_limit_tool_rounds"] = limit_tool_rounds
             max_tool_rounds = 0
             if limit_tool_rounds:
                 max_tool_rounds = st.number_input(
                     "Maximum tool-call rounds",
                     min_value=1,
                     max_value=50,
-                    value=5,
                     step=1,
+                    key="llm_widget_max_tool_rounds",
                 )
+                st.session_state["llm_max_tool_rounds"] = max_tool_rounds
 
-            limit_total_runtime = st.checkbox("Limit total runtime", value=False)
+            limit_total_runtime = st.checkbox("Limit total runtime", key="llm_widget_limit_total_runtime")
+            st.session_state["llm_limit_total_runtime"] = limit_total_runtime
             max_elapsed_seconds = 0
             if limit_total_runtime:
                 max_elapsed_seconds = st.number_input(
                     "Maximum total runtime (sec)",
                     min_value=30,
                     max_value=3600,
-                    value=180,
                     step=30,
+                    key="llm_widget_max_elapsed_seconds",
                 )
+                st.session_state["llm_max_elapsed_seconds"] = max_elapsed_seconds
 
             request_timeout = st.number_input(
                 "Single API request timeout (sec)",
                 min_value=5,
                 max_value=600,
-                value=120,
                 step=5,
+                key="llm_widget_request_timeout",
                 help="Network timeout for each LLM API request. This is still finite to avoid a frozen request.",
             )
-        save_debug_log = st.checkbox("Save debug log", value=True)
+            st.session_state["llm_request_timeout"] = request_timeout
+        save_debug_log = st.checkbox("Save debug log", key="llm_widget_save_debug_log")
+        st.session_state["llm_save_debug_log"] = save_debug_log
         remember_api_key = st.checkbox(
             "Remember API key locally",
-            value=bool(preferences.get("remember_api_key")),
+            key="llm_widget_remember_api_key",
             help=f"Stores the key as plain text in {LLM_PREFERENCES_FILE}. Leave off on shared machines.",
         )
+        st.session_state["llm_remember_api_key"] = remember_api_key
         if st.button("Save LLM settings"):
             save_llm_preferences(
                 {
@@ -988,6 +1059,16 @@ def page_ai_assistant():
                 "LLM job is running in the background. "
                 f"Status: {current_status.get('status', 'queued')}. "
                 "You can switch pages and come back later."
+            )
+            components.html(
+                """
+                <script>
+                setTimeout(() => {
+                  window.parent.location.reload();
+                }, 3000);
+                </script>
+                """,
+                height=0,
             )
 
         question = st.text_area("Question", height=120, key=f"question_{chat['id']}")
@@ -1254,17 +1335,20 @@ df = load_processed_data(
 )
 
 with st.sidebar:
+    page_options = [
+        "Data Setup",
+        "Data Explorer",
+        "EDA Results",
+        "Baseline Results",
+        "AI Assistant",
+    ]
+    show_developer_tools = st.checkbox("Developer tools", value=False)
+    if show_developer_tools:
+        page_options.extend(["LLM Tool API Preview", "Tool Proposals"])
+
     page = st.radio(
         "Page",
-        [
-            "Data Setup",
-            "Data Explorer",
-            "EDA Results",
-            "Baseline Results",
-            "AI Assistant",
-            "LLM Tool API Preview",
-            "Tool Proposals",
-        ],
+        page_options,
     )
 
 if page == "Data Setup":

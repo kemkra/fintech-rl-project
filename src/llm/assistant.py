@@ -61,6 +61,7 @@ If the user asks what this project/app/assistant can do, what problems it can so
 If the user asks what local data is available, call get_local_data_inventory so the answer includes both processed data and raw CSV files.
 If the user asks for a chart, visual, recent performance, baseline strategy results, or a comparison for known tickers, use prepare_ticker_analysis when write tools are enabled.
 If the user asks to discover promising stocks, find stocks worth researching, screen buy candidates, or analyze a theme/industry, use analyze_theme_candidates when write tools are enabled.
+For follow-up confirmations such as "start training", "continue", "confirm", or "run portfolio management" after data has already been prepared in the current chat, do not invent or replace tickers. First use the current Chat workspace data, and call run_portfolio_cem_training with data_scope="workspace" or without a ticker list.
 If write tools are disabled, use read-only tools and explain that automatic data preparation is unavailable.
 If the user's request cannot be handled well with the existing tools, call propose_new_tool to create a tool proposal for developer review. Do not claim the proposed tool has been implemented or executed.
 If the user asks what new tools have been proposed, call list_tool_proposals.
@@ -559,7 +560,7 @@ WRITE_TOOL_SCHEMAS = [
         "type": "function",
         "function": {
             "name": "run_portfolio_cem_training",
-            "description": "Train and evaluate a lightweight multi-asset portfolio policy using Cross-Entropy Method. This is a course-friendly RL training scaffold, not investment advice.",
+            "description": "Train and evaluate a lightweight multi-asset portfolio policy using Cross-Entropy Method. For follow-up commands after a Chat workspace has been prepared, omit tickers or use data_scope='workspace' so the current workspace universe is used.",
             "parameters": {
                 "type": "object",
                 "properties": {

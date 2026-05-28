@@ -337,6 +337,14 @@ Detailed architecture:
   * Verified key LLM tool schemas are exposed
   * Started the Streamlit app and confirmed the Web UI loads successfully
 
+* [x] Web session continuity fixes
+
+  * Preserved AI Assistant provider, base URL, model, API key, debug, and execution-limit fields in Streamlit session state when switching pages
+  * Changed automatic strategy/RL data resolution so the current Chat workspace is preferred during multi-step LLM workflows
+  * Added a Portfolio CEM guard that uses the prepared Chat workspace universe when the LLM accidentally supplies mismatched follow-up tickers
+  * Added automatic pending-job page refresh so completed LLM answers appear without manually switching pages
+  * Hid developer-only pages behind a sidebar `Developer tools` toggle for a cleaner Web interface
+
 ---
 
 ### In Progress
