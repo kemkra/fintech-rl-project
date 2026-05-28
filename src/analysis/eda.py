@@ -17,8 +17,8 @@ def create_dirs():
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 
 
-def load_feature_data(file_path=PROCESSED_DATA_FILE):
-    file_path = Path(file_path)
+def load_feature_data(file_path=None):
+    file_path = Path(file_path or PROCESSED_DATA_FILE)
     if not file_path.exists():
         raise FileNotFoundError(
             f"{file_path} not found. Run src/features/feature_engineering.py first."
@@ -29,7 +29,9 @@ def load_feature_data(file_path=PROCESSED_DATA_FILE):
     return df.sort_values(["Ticker", "Date"]).reset_index(drop=True)
 
 
-def save_data_quality_summary(df, output_path=DATA_QUALITY_FILE):
+def save_data_quality_summary(df, output_path=None):
+    output_path = Path(output_path or DATA_QUALITY_FILE)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
     summary = (
         df.groupby("Ticker")
         .agg(
@@ -46,7 +48,9 @@ def save_data_quality_summary(df, output_path=DATA_QUALITY_FILE):
     return summary
 
 
-def calculate_eda_summary(df, output_path=SUMMARY_FILE):
+def calculate_eda_summary(df, output_path=None):
+    output_path = Path(output_path or SUMMARY_FILE)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
     summary = (
         df.groupby("Ticker")
         .agg(

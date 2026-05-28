@@ -202,6 +202,10 @@ Detailed architecture:
   * Routes generated raw files, processed features, reports, figures, active dataset state, LLM preferences, and Chat history away from shared project paths during Web use
   * Records temporary raw/feature datasets in SQLite while keeping CSV outputs for existing EDA, baseline, and chart modules
   * Keeps the design deploy-friendly for Streamlit Community without requiring persistent cloud storage yet
+  * Changed the Web data-loading proxy checkbox to default off unless `USE_PROXY=true`, because Streamlit Community cannot use a local Clash proxy
+  * Fixed EDA helper defaults so runtime sessions read the session processed file instead of the old `data/processed/stock_features.csv`
+  * Fixed processed-data reads for baseline strategy generation under runtime storage
+  * Added more explicit per-ticker diagnostics when yfinance returns empty data or is rate-limited
 
 * [x] LLM natural-language analysis prototype
 

@@ -115,6 +115,22 @@ def _save_runtime_dataset(dataset_id, raw_df, feature_df=None, scope="project"):
     return str(RUNTIME_DB_FILE)
 
 
+def _raise_no_usable_data(source_rows):
+    details = []
+    for row in source_rows:
+        ticker = row.get("ticker", "UNKNOWN")
+        source = row.get("source", "unknown")
+        error = row.get("error")
+        status = row.get("status") or {}
+        reason = error or status.get("reason") or "No data returned."
+        details.append(f"{ticker} via {source}: {reason}")
+
+    message = "No usable raw data found or downloaded for the requested tickers/date range."
+    if details:
+        message = f"{message} Details: {'; '.join(details)}"
+    raise ValueError(message)
+
+
 def normalize_chat_id(chat_id=None):
     text = str(chat_id or DEFAULT_CHAT_WORKSPACE_ID).strip()
     safe = "".join(char for char in text if char.isalnum() or char in {"-", "_"})
@@ -837,8 +853,8 @@ def load_llm_workspace_raw_ticker(ticker, start_date=None, end_date=None):
     return load_raw_ticker_from_dir(RAW_DATA_DIR, ticker, start_date=start_date, end_date=end_date)
 
 
-def _read_processed_data(data_file=PROCESSED_DATA_FILE):
-    data_file = Path(data_file)
+def _read_processed_data(data_file=None):
+    data_file = Path(data_file or PROCESSED_DATA_FILE)
     if not data_file.exists():
         return pd.DataFrame()
 
@@ -1769,22 +1785,27 @@ def refresh_market_data(
             source_rows.append({"ticker": ticker, "source": "local_raw", "status": local_status})
             continue
 
-        downloaded_df = download_data.download_ticker_data(
-            ticker=ticker,
-            start_date=str(start_date),
-            end_date=str(end_date),
-            interval=SUPPORTED_INTERVAL,
-        )
+        try:
+            downloaded_df = download_data.download_ticker_data(
+                ticker=ticker,
+                start_date=str(start_date),
+                end_date=str(end_date),
+                interval=SUPPORTED_INTERVAL,
+            )
+            download_error = None
+        except Exception as exc:
+            downloaded_df = pd.DataFrame()
+            download_error = str(exc)
         if not downloaded_df.empty:
             file_path = RAW_DATA_DIR / f"{ticker}.csv"
             downloaded_df.to_csv(file_path, index=False)
             raw_frames.append(downloaded_df)
             source_rows.append({"ticker": ticker, "source": "yfinance", "rows": int(len(downloaded_df))})
         else:
-            source_rows.append({"ticker": ticker, "source": "yfinance", "rows": 0, "error": "No data returned."})
+            source_rows.append({"ticker": ticker, "source": "yfinance", "rows": 0, "error": download_error or "No data returned. yfinance may be rate-limited or the ticker/date range may be unavailable."})
 
     if not raw_frames:
-        raise ValueError("No usable raw data found or downloaded for the requested tickers/date range.")
+        _raise_no_usable_data(source_rows)
 
     raw_df = pd.concat(raw_frames, axis=0, ignore_index=True)
     feature_df = add_technical_indicators(raw_df)
@@ -1874,21 +1895,26 @@ def refresh_llm_workspace_data(
             source_rows.append({"ticker": ticker, "source": "shared_raw", "status": local_status})
             continue
 
-        downloaded_df = download_data.download_ticker_data(
-            ticker=ticker,
-            start_date=str(start_date),
-            end_date=str(end_date),
-            interval=SUPPORTED_INTERVAL,
-        )
+        try:
+            downloaded_df = download_data.download_ticker_data(
+                ticker=ticker,
+                start_date=str(start_date),
+                end_date=str(end_date),
+                interval=SUPPORTED_INTERVAL,
+            )
+            download_error = None
+        except Exception as exc:
+            downloaded_df = pd.DataFrame()
+            download_error = str(exc)
         if not downloaded_df.empty:
             downloaded_df.to_csv(RAW_DATA_DIR / f"{ticker}.csv", index=False)
             raw_frames.append(downloaded_df)
             source_rows.append({"ticker": ticker, "source": "yfinance_to_shared_raw", "rows": int(len(downloaded_df))})
         else:
-            source_rows.append({"ticker": ticker, "source": "yfinance_to_shared_raw", "rows": 0, "error": "No data returned."})
+            source_rows.append({"ticker": ticker, "source": "yfinance_to_shared_raw", "rows": 0, "error": download_error or "No data returned. yfinance may be rate-limited or the ticker/date range may be unavailable."})
 
     if not raw_frames:
-        raise ValueError("No usable raw data found or downloaded for the requested tickers/date range.")
+        _raise_no_usable_data(source_rows)
 
     raw_df = pd.concat(raw_frames, axis=0, ignore_index=True)
     feature_df = add_technical_indicators(raw_df)

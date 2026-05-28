@@ -585,7 +585,11 @@ def page_data_setup(df):
             col1, col2 = st.columns(2)
             start_date = col1.date_input("Start date", value=pd.to_datetime("2015-01-01"))
             end_date = col2.date_input("End date", value=pd.to_datetime("2025-12-31"))
-            use_proxy = st.checkbox("Use Clash proxy", value=True)
+            use_proxy = st.checkbox(
+                "Use Clash proxy",
+                value=os.getenv("USE_PROXY", "false").lower() in {"1", "true", "yes"},
+                help="Only enable this when running locally with a working Clash proxy. Leave it off on Streamlit Community.",
+            )
             data_source_label = st.selectbox(
                 "Data source",
                 ["Auto (use local if valid)", "Online (download from yfinance)"],
