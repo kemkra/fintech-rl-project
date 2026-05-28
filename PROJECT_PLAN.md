@@ -206,6 +206,7 @@ Detailed architecture:
   * Fixed EDA helper defaults so runtime sessions read the session processed file instead of the old `data/processed/stock_features.csv`
   * Fixed processed-data reads for baseline strategy generation under runtime storage
   * Added more explicit per-ticker diagnostics when yfinance returns empty data or is rate-limited
+  * Added a guard to `run_app.py` so it cannot recursively start extra Streamlit servers if accidentally selected as the Cloud entry file
 
 * [x] LLM natural-language analysis prototype
 

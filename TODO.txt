@@ -52,4 +52,5 @@
 52. [x] 修复 EDA 在 runtime 存储下仍读取旧 data/processed 默认路径的问题
 53. [x] 修复 baseline 在 runtime 存储下仍读取旧 processed 默认路径的问题
 54. [x] 改进 yfinance 空数据/限流时的数据加载错误提示
-55. [ ] 写 README、PPT 和最终 AI 使用说明
+55. [x] 防止 run_app.py 被误作为 Streamlit Cloud 入口后递归启动多个端口
+56. [ ] 写 README、PPT 和最终 AI 使用说明
