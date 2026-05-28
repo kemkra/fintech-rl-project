@@ -71,8 +71,16 @@ TOOL_SCHEMAS = [
     {
         "type": "function",
         "function": {
+            "name": "get_runtime_storage_status",
+            "description": "Get the active Web/runtime storage status, including the SQLite runtime database and temporary datasets for this session.",
+            "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "list_local_raw_data",
-            "description": "List valid and invalid local raw CSV files under data/raw, including tickers, date ranges, and row counts.",
+            "description": "List valid and invalid raw CSV files in the active runtime cache, including tickers, date ranges, and row counts.",
             "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
         },
     },
@@ -88,7 +96,7 @@ TOOL_SCHEMAS = [
         "type": "function",
         "function": {
             "name": "get_llm_workspace_status",
-            "description": "Get the current Chat workspace status. Raw files are shared in data/raw; processed/results are Chat-scoped.",
+            "description": "Get the current Chat workspace status. Raw files live in the active runtime cache; processed/results are Chat-scoped.",
             "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
         },
     },
@@ -446,7 +454,7 @@ WRITE_TOOL_SCHEMAS = [
         "type": "function",
         "function": {
             "name": "refresh_llm_workspace_data",
-            "description": "Load market data into the current Chat workspace and regenerate workspace features without modifying the main project dataset. Raw files are stored in the shared data/raw cache.",
+            "description": "Load market data into the current Chat workspace and regenerate workspace features without modifying the main project dataset. Raw files are stored in the active runtime cache.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -548,6 +556,7 @@ WRITE_TOOL_SCHEMAS = [
 
 TOOL_FUNCTIONS = {
     "get_dataset_status": market_tools.get_dataset_status,
+    "get_runtime_storage_status": market_tools.get_runtime_storage_status,
     "list_local_raw_data": market_tools.list_local_raw_data,
     "get_local_data_inventory": market_tools.get_local_data_inventory,
     "get_llm_workspace_status": market_tools.get_llm_workspace_status,

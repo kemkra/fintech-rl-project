@@ -194,6 +194,15 @@ Detailed architecture:
   * Saves screener results to the current Chat workspace
   * Added `load_shortlist_for_analysis()` to load only the shortlist into the Chat workspace for deeper feature/strategy analysis
 
+* [x] Streamlit Community runtime storage
+
+  * Added per-session runtime directories under `.streamlit_runtime/sessions/<session_id>/`
+  * Added `src/storage/runtime_store.py` with a lightweight SQLite runtime database
+  * Updated Streamlit startup to configure project tools into the current Web session runtime
+  * Routes generated raw files, processed features, reports, figures, active dataset state, LLM preferences, and Chat history away from shared project paths during Web use
+  * Records temporary raw/feature datasets in SQLite while keeping CSV outputs for existing EDA, baseline, and chart modules
+  * Keeps the design deploy-friendly for Streamlit Community without requiring persistent cloud storage yet
+
 * [x] LLM natural-language analysis prototype
 
   * Implemented `src/llm/assistant.py`

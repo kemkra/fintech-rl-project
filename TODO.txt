@@ -47,4 +47,5 @@
 47. [x] 数据加载界面接入可搜索的美股代码目录，并将下载文案改为加载
 48. [x] 重构 AI workspace：raw 共用，processed/results 按 Chat 隔离
 49. [x] 增加 LLM 股票候选筛选工具和 shortlist 加载工具
-50. [ ] 写 README、PPT 和最终 AI 使用说明
+50. [x] 增加 Streamlit Community 友好的临时 runtime 存储和 SQLite 数据集记录
+51. [ ] 写 README、PPT 和最终 AI 使用说明

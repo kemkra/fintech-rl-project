@@ -1,5 +1,6 @@
 from datetime import datetime
 import json
+import os
 from pathlib import Path
 import sys
 from uuid import uuid4
@@ -26,6 +27,7 @@ st.set_page_config(page_title="Financial Market Analysis", layout="wide")
 CONFIG_DIR = PROJECT_ROOT / "config"
 LLM_PREFERENCES_FILE = CONFIG_DIR / "llm_preferences.json"
 LLM_CHATS_FILE = CONFIG_DIR / "llm_chats.json"
+WEB_RUNTIME_ROOT = PROJECT_ROOT / ".streamlit_runtime"
 POPULAR_TICKERS = [
     "AAPL",
     "ABBV",
@@ -110,6 +112,27 @@ POPULAR_TICKERS = [
     "WMT",
     "XOM",
 ]
+
+
+def init_web_runtime_storage():
+    global CONFIG_DIR, LLM_PREFERENCES_FILE, LLM_CHATS_FILE
+
+    if "web_session_id" not in st.session_state:
+        st.session_state["web_session_id"] = uuid4().hex[:12]
+
+    runtime_root = Path(os.getenv("FINTECH_RUNTIME_ROOT", WEB_RUNTIME_ROOT))
+    paths = market_tools.configure_runtime_storage(
+        session_id=st.session_state["web_session_id"],
+        root=runtime_root,
+    )
+    CONFIG_DIR = Path(paths["config_dir"])
+    LLM_PREFERENCES_FILE = CONFIG_DIR / "llm_preferences.json"
+    LLM_CHATS_FILE = CONFIG_DIR / "llm_chats.json"
+    st.session_state["runtime_paths"] = paths
+    return paths
+
+
+init_web_runtime_storage()
 
 
 @st.cache_data(show_spinner=False)
@@ -426,11 +449,17 @@ def show_status_cards(status):
 
 def show_current_data_snapshot():
     inventory = market_tools.get_local_data_inventory()
+    runtime_status = market_tools.get_runtime_storage_status()
     active = inventory["active_analysis_dataset"]
     processed = inventory["processed_dataset"]
     raw_files = inventory["raw_files"]
 
     with st.expander("Current data snapshot", expanded=True):
+        if runtime_status.get("enabled"):
+            st.caption(
+                "Web runtime storage: "
+                f"session {runtime_status['session_id']} | SQLite {runtime_status['database']}"
+            )
         active_dataset = active.get("dataset", {})
         st.write(
             "Active app dataset: "
@@ -462,11 +491,11 @@ def show_current_data_snapshot():
         raw_tickers = raw_files.get("tickers", [])
         raw_only_tickers = inventory.get("raw_only_tickers", [])
         col1, col2 = st.columns(2)
-        col1.metric("Raw tickers", len(raw_tickers))
+        col1.metric("Session raw tickers", len(raw_tickers))
         col2.metric("Raw-only tickers", len(raw_only_tickers))
 
         if raw_only_tickers:
-            st.caption("Raw-only tickers are available in data/raw but are not part of the current processed dataset.")
+            st.caption("Raw-only tickers are available in this Web session cache but are not part of the current processed dataset.")
             st.write(", ".join(raw_only_tickers))
 
         raw_records = raw_files.get("records", [])
@@ -488,7 +517,7 @@ def show_current_data_snapshot():
         else:
             st.caption("No AI chat workspace processed dataset yet.")
 
-        st.caption("Raw data is shared in data/raw and is not duplicated per chat.")
+        st.caption("Raw market data is scoped to this Web session. Chat processed/results are isolated per chat.")
 
 
 def page_data_setup(df):
@@ -808,7 +837,7 @@ def page_ai_assistant():
             st.success("LLM settings saved locally.")
 
         allow_write_tools = True
-        st.caption("AI analysis outputs are written to the current Chat workspace. Raw market data is shared in data/raw.")
+        st.caption("AI analysis outputs are written to the current Chat workspace. Raw market data is cached only inside this Web session.")
 
         chat["memory_summary"] = build_memory_summary(chat.get("messages", []))
         if chat["memory_summary"]:
@@ -945,6 +974,7 @@ def page_tool_api_preview():
     st.code(
         """
 get_dataset_status()
+get_runtime_storage_status()
 list_local_raw_data()
 get_local_data_inventory()
 get_llm_workspace_status(chat_id=None)

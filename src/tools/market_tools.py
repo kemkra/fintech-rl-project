@@ -9,6 +9,8 @@ import numpy as np
 import pandas as pd
 import yfinance as yf
 
+from src.storage import runtime_store
+
 
 CONFIG_DIR = Path("config")
 ACTIVE_ANALYSIS_DATASET_FILE = CONFIG_DIR / "active_analysis_dataset.json"
@@ -47,6 +49,70 @@ SCREENER_SEED_TICKERS = [
     "SPY", "QQQ", "DIA", "IWM",
 ]
 SUPPORTED_INTERVAL = "1d"
+RUNTIME_SESSION_ID = None
+RUNTIME_DB_FILE = None
+
+
+def configure_runtime_storage(session_id=None, root=None):
+    """Point generated Web artifacts at a per-session runtime directory."""
+    global CONFIG_DIR, ACTIVE_ANALYSIS_DATASET_FILE, REFERENCE_DATA_DIR, US_SYMBOLS_FILE
+    global PROCESSED_DATA_FILE, RAW_DATA_DIR, CHAT_WORKSPACES_DIR, LLM_WORKSPACE_DIR
+    global EDA_SUMMARY_FILE, DATA_QUALITY_FILE, BUY_HOLD_EQUITY_FILE, BUY_HOLD_METRICS_FILE
+    global MA_EQUITY_FILE, MA_METRICS_FILE, RSI_EQUITY_FILE, RSI_METRICS_FILE
+    global STRATEGY_COMPARISON_FILE, FIGURES_DIR, RUNTIME_SESSION_ID, RUNTIME_DB_FILE
+
+    paths = runtime_store.ensure_runtime(session_id=session_id, root=root)
+    CONFIG_DIR = paths["config_dir"]
+    ACTIVE_ANALYSIS_DATASET_FILE = CONFIG_DIR / "active_analysis_dataset.json"
+    REFERENCE_DATA_DIR = paths["reference_dir"]
+    US_SYMBOLS_FILE = REFERENCE_DATA_DIR / "us_stock_symbols.csv"
+    PROCESSED_DATA_FILE = paths["processed_dir"] / "stock_features.csv"
+    RAW_DATA_DIR = paths["raw_dir"]
+    CHAT_WORKSPACES_DIR = paths["chat_workspaces_dir"]
+    LLM_WORKSPACE_DIR = CHAT_WORKSPACES_DIR / DEFAULT_CHAT_WORKSPACE_ID
+    EDA_SUMMARY_FILE = paths["results_dir"] / "eda_summary.csv"
+    DATA_QUALITY_FILE = paths["results_dir"] / "data_quality_summary.csv"
+    BUY_HOLD_EQUITY_FILE = paths["results_dir"] / "buy_hold_equity_curves.csv"
+    BUY_HOLD_METRICS_FILE = paths["results_dir"] / "buy_hold_metrics.csv"
+    MA_EQUITY_FILE = paths["results_dir"] / "ma_equity_curves.csv"
+    MA_METRICS_FILE = paths["results_dir"] / "ma_metrics.csv"
+    RSI_EQUITY_FILE = paths["results_dir"] / "rsi_equity_curves.csv"
+    RSI_METRICS_FILE = paths["results_dir"] / "rsi_metrics.csv"
+    STRATEGY_COMPARISON_FILE = paths["results_dir"] / "strategy_comparison.csv"
+    FIGURES_DIR = paths["figures_dir"]
+    RUNTIME_SESSION_ID = paths["session_id"]
+    RUNTIME_DB_FILE = paths["db_file"]
+    return {key: str(value) if isinstance(value, Path) else value for key, value in paths.items()}
+
+
+def get_runtime_storage_status():
+    if not RUNTIME_DB_FILE:
+        return {
+            "enabled": False,
+            "message": "Runtime storage has not been configured.",
+        }
+
+    status = runtime_store.get_runtime_status(RUNTIME_DB_FILE, RUNTIME_SESSION_ID)
+    status["enabled"] = True
+    status["raw_dir"] = str(RAW_DATA_DIR)
+    status["processed_file"] = str(PROCESSED_DATA_FILE)
+    status["chat_workspaces_dir"] = str(CHAT_WORKSPACES_DIR)
+    return status
+
+
+def _save_runtime_dataset(dataset_id, raw_df, feature_df=None, scope="project"):
+    if not RUNTIME_DB_FILE:
+        return None
+    runtime_store.save_runtime_dataset(
+        db_file=RUNTIME_DB_FILE,
+        session_id=RUNTIME_SESSION_ID,
+        dataset_id=dataset_id,
+        raw_df=raw_df,
+        feature_df=feature_df,
+        scope=scope,
+        interval=SUPPORTED_INTERVAL,
+    )
+    return str(RUNTIME_DB_FILE)
 
 
 def normalize_chat_id(chat_id=None):
@@ -1023,7 +1089,7 @@ def get_llm_workspace_status(chat_id=None):
         "chat_id": paths["chat_id"],
         "workspace_dir": str(paths["workspace_dir"]),
         "raw_files": raw_status,
-        "raw_storage": "shared data/raw",
+        "raw_storage": str(RAW_DATA_DIR),
         "processed_dataset": processed_status,
     }
 
@@ -1070,6 +1136,14 @@ def list_available_figures():
         "figures": [path.name for path in sorted(FIGURES_DIR.glob("*.png"))],
         "directory": str(FIGURES_DIR),
     }
+
+
+def _configure_eda_module(eda_module):
+    eda_module.PROCESSED_DATA_FILE = PROCESSED_DATA_FILE
+    eda_module.FIGURES_DIR = FIGURES_DIR
+    eda_module.RESULTS_DIR = EDA_SUMMARY_FILE.parent
+    eda_module.SUMMARY_FILE = EDA_SUMMARY_FILE
+    eda_module.DATA_QUALITY_FILE = DATA_QUALITY_FILE
 
 
 def get_ticker_history(ticker, start_date=None, end_date=None, columns=None, max_rows=500, chat_id=None):
@@ -1659,7 +1733,7 @@ def refresh_market_data(
     run_baseline_after=True,
     data_source="auto",
 ):
-    from src.analysis.eda import run_eda
+    from src.analysis import eda
     from src.data import download_data
     from src.features.feature_engineering import add_technical_indicators, save_processed_data
 
@@ -1672,7 +1746,8 @@ def refresh_market_data(
         raise ValueError("data_source must be one of: auto, download.")
 
     download_data.USE_PROXY = bool(use_proxy)
-    download_data.create_dirs()
+    download_data.RAW_DATA_DIR = RAW_DATA_DIR
+    RAW_DATA_DIR.mkdir(parents=True, exist_ok=True)
     if use_proxy:
         download_data.setup_proxy()
 
@@ -1714,6 +1789,12 @@ def refresh_market_data(
     raw_df = pd.concat(raw_frames, axis=0, ignore_index=True)
     feature_df = add_technical_indicators(raw_df)
     save_processed_data(feature_df, output_path=PROCESSED_DATA_FILE)
+    runtime_db = _save_runtime_dataset(
+        dataset_id="project_active",
+        raw_df=raw_df,
+        feature_df=feature_df,
+        scope="project",
+    )
 
     result = {
         "requested_tickers": tickers,
@@ -1723,10 +1804,12 @@ def refresh_market_data(
         "processed_rows": int(len(feature_df)),
         "processed_ticker_count": int(feature_df["Ticker"].nunique()),
         "processed_file": str(PROCESSED_DATA_FILE),
+        "runtime_database": runtime_db,
     }
 
     if run_eda_after:
-        run_eda(example_ticker=tickers[0])
+        _configure_eda_module(eda)
+        eda.run_eda(example_ticker=tickers[0])
         result["eda_summary_file"] = str(EDA_SUMMARY_FILE)
         result["figures_dir"] = str(FIGURES_DIR)
 
@@ -1768,6 +1851,7 @@ def refresh_llm_workspace_data(
 
     paths = get_chat_workspace_paths(chat_id)
     download_data.USE_PROXY = bool(use_proxy)
+    download_data.RAW_DATA_DIR = RAW_DATA_DIR
     RAW_DATA_DIR.mkdir(parents=True, exist_ok=True)
     paths["processed_dir"].mkdir(parents=True, exist_ok=True)
     if use_proxy:
@@ -1809,6 +1893,12 @@ def refresh_llm_workspace_data(
     raw_df = pd.concat(raw_frames, axis=0, ignore_index=True)
     feature_df = add_technical_indicators(raw_df)
     feature_df.to_csv(paths["processed_file"], index=False)
+    runtime_db = _save_runtime_dataset(
+        dataset_id=f"chat_{paths['chat_id']}_active",
+        raw_df=raw_df,
+        feature_df=feature_df,
+        scope=f"chat:{paths['chat_id']}",
+    )
 
     result = {
         "requested_tickers": tickers,
@@ -1821,6 +1911,7 @@ def refresh_llm_workspace_data(
         "processed_rows": int(len(feature_df)),
         "processed_ticker_count": int(feature_df["Ticker"].nunique()),
         "processed_file": str(paths["processed_file"]),
+        "runtime_database": runtime_db,
         "message": "Chat workspace data refreshed without modifying the main project dataset.",
     }
 

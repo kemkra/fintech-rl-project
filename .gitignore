@@ -26,3 +26,6 @@ data/workspaces/
 
 # Downloaded symbol-directory cache
 data/reference/us_stock_symbols.csv
+
+# Streamlit deployment/runtime scratch space
+.streamlit_runtime/

@@ -94,18 +94,18 @@ selected tickers / start date / end date / proxy option
   ↓
 local raw validation or src/data/download_data.py
   ↓
-data/raw/*.csv
+runtime raw cache
   ↓
 src/features/feature_engineering.py
   Directly combines the selected individual raw CSV files in memory.
   The pipeline no longer keeps a saved merged raw CSV as a required artifact.
   ↓
-data/processed/stock_features.csv
+runtime processed feature dataset
   ↓
 EDA / strategies / RL environment / backtesting
   ↓
-reports/figures/
-reports/results/
+runtime reports/figures/
+runtime reports/results/
 models/
   ↓
 src/tools/market_tools.py
@@ -129,9 +129,11 @@ Local raw validation checks required columns, date coverage, and whether the fil
 
 Raw storage rule:
 
-* Keep individual ticker CSV files in `data/raw/`.
+* Local development can keep individual ticker CSV files in `data/raw/`.
+* Streamlit Web sessions use `.streamlit_runtime/sessions/<session_id>/raw/` so visitors do not depend on the author's local data files.
 * Do not keep `merged_stock_data.csv` as a long-lived artifact.
 * Build combined raw frames in memory only when generating a processed dataset.
+* Record temporary runtime datasets in SQLite for Web/session bookkeeping while keeping CSV outputs for existing analysis modules.
 
 ## 5. Planned Web Pages
 
@@ -301,7 +303,7 @@ Debug logs:
 * AI Assistant can save each LLM/tool-call run to `reports/logs/`.
 * Logs include tool calls, compacted tool results, and final answer metadata for debugging.
 
-For the local demo workflow, AI-triggered data loading uses shared raw files and per-chat analysis workspaces. The AI Assistant can refresh a Chat workspace without overwriting the main project dataset. Users can review workspace status in Data Setup and explicitly merge workspace data into the main project dataset when desired.
+For the local demo workflow, AI-triggered data loading uses a runtime raw cache and per-chat analysis workspaces. The AI Assistant can refresh a Chat workspace without overwriting the main project dataset. Users can review workspace status in Data Setup and explicitly merge workspace data into the main project dataset when desired.
 
 The Web app also has an active dataset pointer:
 
@@ -309,17 +311,18 @@ The Web app also has an active dataset pointer:
 config/active_analysis_dataset.json
 ```
 
-This file records whether app pages should currently read the main project processed dataset or a specific Chat workspace processed dataset. It lets the LLM push an analysis dataset to Data Explorer / Baseline pages for inspection without overwriting `data/processed/stock_features.csv`.
+In Streamlit Web sessions this pointer is stored under the session runtime config directory instead of the shared project `config/` directory. It records whether app pages should currently read the main project processed dataset or a specific Chat workspace processed dataset. It lets the LLM push an analysis dataset to Data Explorer / Baseline pages for inspection without overwriting the session's main processed feature file.
 
 Workspace storage:
 
 ```text
-data/raw/                         shared raw cache
-data/processed/                   main project processed dataset
-data/workspaces/chats/<chat_id>/  per-chat processed/results/figures
+.streamlit_runtime/runtime.db                         temporary SQLite dataset registry
+.streamlit_runtime/sessions/<session_id>/raw/          session raw cache
+.streamlit_runtime/sessions/<session_id>/processed/    session main processed dataset
+.streamlit_runtime/sessions/<session_id>/workspaces/   per-chat processed/results/figures
 ```
 
-Raw market CSV files should be shared across chats. Chat-level separation is most useful for processed datasets, figures, and strategy results because those represent a temporary analytical view rather than reusable source data.
+Raw market CSV files are shared within one Web session, not across all visitors. Chat-level separation is most useful for processed datasets, figures, and strategy results because those represent a temporary analytical view rather than reusable source data.
 
 Candidate discovery workflow:
 
