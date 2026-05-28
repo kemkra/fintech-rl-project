@@ -1,7 +1,7 @@
 [project]
 name = "fintech-rl-project"
 version = "0.1.0"
-description = "Add your description here"
+description = "Intelligent financial market analysis and reinforcement-learning trading research app"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [

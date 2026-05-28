@@ -42,6 +42,9 @@ MA_METRICS_FILE = Path("reports/results/ma_metrics.csv")
 RSI_EQUITY_FILE = Path("reports/results/rsi_equity_curves.csv")
 RSI_METRICS_FILE = Path("reports/results/rsi_metrics.csv")
 STRATEGY_COMPARISON_FILE = Path("reports/results/strategy_comparison.csv")
+PORTFOLIO_RL_EQUITY_FILE = Path("reports/results/portfolio_rl_equity_curve.csv")
+PORTFOLIO_RL_METRICS_FILE = Path("reports/results/portfolio_rl_metrics.csv")
+PORTFOLIO_RL_MODEL_FILE = Path("models/portfolio_cem_policy.npz")
 FIGURES_DIR = Path("reports/figures")
 TOOL_PROPOSALS_DIR = Path("reports/tool_proposals")
 TEMP_COMPOSITE_TOOLS_FILE = Path("config/temp_composite_tools.json")
@@ -61,13 +64,115 @@ RUNTIME_SESSION_ID = None
 RUNTIME_DB_FILE = None
 
 
+def get_project_capabilities():
+    """Return a user-facing capability map for the current project assistant."""
+    return {
+        "project_name": "FinRL Insight",
+        "short_description": (
+            "An intelligent financial market analysis and reinforcement-learning trading "
+            "research app for loading market data, engineering technical indicators, "
+            "running EDA, comparing strategies, and using an LLM to call local analysis tools."
+        ),
+        "main_capabilities": [
+            {
+                "area": "Market data loading",
+                "can_do": [
+                    "Search or type US stock/ETF tickers.",
+                    "Load daily market data for a chosen date range through yfinance/Yahoo chart fallback.",
+                    "Reuse valid runtime raw data when possible and regenerate processed features.",
+                    "Keep Web-session data isolated so Streamlit Community users do not share files.",
+                ],
+                "example_questions": [
+                    "Load TSLA, NVDA, and QQQ for the last year.",
+                    "What local data is currently available?",
+                ],
+            },
+            {
+                "area": "Feature engineering and EDA",
+                "can_do": [
+                    "Generate MA5, MA20, RSI, MACD, daily return, and volatility features.",
+                    "Summarize asset-level return, risk, missing data, and date coverage.",
+                    "Create and display price and EDA figures in the Web UI.",
+                ],
+                "example_questions": [
+                    "Show Tesla's price chart for the last year.",
+                    "Summarize the data quality for the active dataset.",
+                ],
+            },
+            {
+                "area": "Traditional strategy backtesting",
+                "can_do": [
+                    "Run Buy & Hold, Moving Average crossover, and RSI threshold strategies.",
+                    "Save equity curves and performance metrics.",
+                    "Build a unified comparison table with return, volatility, Sharpe ratio, drawdown, and win rate.",
+                ],
+                "example_questions": [
+                    "Compare Buy & Hold, MA, and RSI for AAPL and MSFT.",
+                    "Which baseline strategy performed best on the loaded data?",
+                ],
+            },
+            {
+                "area": "Portfolio RL research",
+                "can_do": [
+                    "Run a multi-asset PortfolioEnv with cash plus asset allocation actions.",
+                    "Train a lightweight Portfolio CEM policy as an RL-style baseline.",
+                    "Compare portfolio-level RL results with traditional single-asset strategy results while marking the comparison level clearly.",
+                ],
+                "example_questions": [
+                    "Train the portfolio CEM strategy on the active dataset.",
+                    "Compare the portfolio RL result with traditional strategies.",
+                ],
+            },
+            {
+                "area": "LLM-assisted analysis",
+                "can_do": [
+                    "Translate company/theme requests into ticker candidates and validate them.",
+                    "Automatically prepare Chat-scoped data when the requested ticker is missing.",
+                    "Screen a theme such as semiconductor, AI, banks, or renewable energy using available candidate pools.",
+                    "Push AI-generated analysis data and charts to the app pages for inspection.",
+                    "Save debug logs and expose tool calls for troubleshooting.",
+                ],
+                "example_questions": [
+                    "帮我挖掘几支芯片科技相关股票，并比较它们。",
+                    "请分析甲骨文最近一年的走势和策略表现。",
+                ],
+            },
+            {
+                "area": "Tool extension workflow",
+                "can_do": [
+                    "Create tool proposals when the existing toolset cannot solve a request well.",
+                    "Register temporary session-scoped composite tools from approved base tools.",
+                    "Locally promote reviewed tool proposals into generated tool files when developer mode is enabled.",
+                ],
+                "example_questions": [
+                    "你生成过哪些新工具草案？",
+                    "把这个筛选逻辑注册成一个临时工具。",
+                ],
+            },
+        ],
+        "current_limitations": [
+            "This is a research/education tool, not investment advice.",
+            "Cloud deployments cannot use a user's local Clash proxy; online data depends on public Yahoo/yfinance access.",
+            "The current RL training is a lightweight Portfolio CEM scaffold, not a full PPO/DQN deep RL agent yet.",
+            "Theme screening uses available symbol candidates and historical market data; it is not a complete fundamental research platform.",
+        ],
+        "recommended_response_style": [
+            "Start with a concise overview.",
+            "Group capabilities by user task rather than internal file names.",
+            "Offer 3 to 6 concrete example questions.",
+            "Mention limitations briefly and clearly.",
+        ],
+    }
+
+
 def configure_runtime_storage(session_id=None, root=None):
     """Point generated Web artifacts at a per-session runtime directory."""
     global CONFIG_DIR, ACTIVE_ANALYSIS_DATASET_FILE, REFERENCE_DATA_DIR, US_SYMBOLS_FILE
     global PROCESSED_DATA_FILE, RAW_DATA_DIR, CHAT_WORKSPACES_DIR, LLM_WORKSPACE_DIR
     global EDA_SUMMARY_FILE, DATA_QUALITY_FILE, BUY_HOLD_EQUITY_FILE, BUY_HOLD_METRICS_FILE
     global MA_EQUITY_FILE, MA_METRICS_FILE, RSI_EQUITY_FILE, RSI_METRICS_FILE
-    global STRATEGY_COMPARISON_FILE, FIGURES_DIR, TOOL_PROPOSALS_DIR, TEMP_COMPOSITE_TOOLS_FILE, RUNTIME_SESSION_ID, RUNTIME_DB_FILE
+    global STRATEGY_COMPARISON_FILE, PORTFOLIO_RL_EQUITY_FILE, PORTFOLIO_RL_METRICS_FILE, PORTFOLIO_RL_MODEL_FILE
+    global FIGURES_DIR, TOOL_PROPOSALS_DIR, TEMP_COMPOSITE_TOOLS_FILE, RUNTIME_SESSION_ID, RUNTIME_DB_FILE
 
     paths = runtime_store.ensure_runtime(session_id=session_id, root=root)
     CONFIG_DIR = paths["config_dir"]
@@ -87,6 +192,9 @@ def configure_runtime_storage(session_id=None, root=None):
     RSI_EQUITY_FILE = paths["results_dir"] / "rsi_equity_curves.csv"
     RSI_METRICS_FILE = paths["results_dir"] / "rsi_metrics.csv"
     STRATEGY_COMPARISON_FILE = paths["results_dir"] / "strategy_comparison.csv"
+    PORTFOLIO_RL_EQUITY_FILE = paths["results_dir"] / "portfolio_rl_equity_curve.csv"
+    PORTFOLIO_RL_METRICS_FILE = paths["results_dir"] / "portfolio_rl_metrics.csv"
+    PORTFOLIO_RL_MODEL_FILE = paths["session_dir"] / "models" / "portfolio_cem_policy.npz"
     FIGURES_DIR = paths["figures_dir"]
     TOOL_PROPOSALS_DIR = paths["tool_proposals_dir"]
     TEMP_COMPOSITE_TOOLS_FILE = paths["temp_tools_file"]
@@ -167,6 +275,9 @@ def get_chat_workspace_paths(chat_id=None):
         "rsi_equity_file": results_dir / "rsi_equity_curves.csv",
         "rsi_metrics_file": results_dir / "rsi_metrics.csv",
         "strategy_comparison_file": results_dir / "strategy_comparison.csv",
+        "portfolio_rl_equity_file": results_dir / "portfolio_rl_equity_curve.csv",
+        "portfolio_rl_metrics_file": results_dir / "portfolio_rl_metrics.csv",
+        "portfolio_rl_model_file": workspace_dir / "models" / "portfolio_cem_policy.npz",
     }
 
 
@@ -763,6 +874,7 @@ def load_shortlist_for_analysis(
         start_date=start_date,
         end_date=end_date,
         use_proxy=use_proxy,
+        run_eda_after=True,
         run_baseline_after=run_baseline_after,
         data_source=data_source,
         chat_id=chat_id,
@@ -1536,6 +1648,32 @@ def _save_active_analysis_dataset_config(source, note=None, chat_id=None):
     return config
 
 
+def get_active_artifact_paths():
+    config = _load_active_analysis_dataset_config()
+    source = config["source"]
+    chat_id = config.get("chat_id")
+    if source in {"llm_workspace", "chat_workspace"}:
+        paths = get_chat_workspace_paths(chat_id)
+        return {
+            "source": "chat_workspace",
+            "chat_id": paths["chat_id"],
+            "processed_file": paths["processed_file"],
+            "figures_dir": paths["figures_dir"],
+            "results_dir": paths["results_dir"],
+            "eda_summary_file": paths["results_dir"] / "eda_summary.csv",
+            "data_quality_file": paths["results_dir"] / "data_quality_summary.csv",
+        }
+    return {
+        "source": "project",
+        "chat_id": None,
+        "processed_file": PROCESSED_DATA_FILE,
+        "figures_dir": FIGURES_DIR,
+        "results_dir": EDA_SUMMARY_FILE.parent,
+        "eda_summary_file": EDA_SUMMARY_FILE,
+        "data_quality_file": DATA_QUALITY_FILE,
+    }
+
+
 def get_active_analysis_dataset_status():
     config = _load_active_analysis_dataset_config()
     source = config["source"]
@@ -1547,10 +1685,15 @@ def get_active_analysis_dataset_status():
         processed_file = PROCESSED_DATA_FILE
         label = "Main project dataset"
     dataset_status = _describe_processed_file(processed_file)
+    active_paths = get_active_artifact_paths()
     return {
         "source": source,
         "label": label,
         "processed_file": str(processed_file),
+        "figures_dir": str(active_paths["figures_dir"]),
+        "results_dir": str(active_paths["results_dir"]),
+        "eda_summary_file": str(active_paths["eda_summary_file"]),
+        "data_quality_file": str(active_paths["data_quality_file"]),
         "note": config.get("note"),
         "updated_at": config.get("updated_at"),
         "pushed_by_chat_id": config.get("pushed_by_chat_id"),
@@ -1709,28 +1852,48 @@ def get_local_data_inventory(chat_id=None):
     }
 
 
-def get_eda_summary():
-    df = _read_csv(EDA_SUMMARY_FILE)
+def _resolve_results_file(file_kind, data_scope="active", chat_id=None):
+    data_scope = str(data_scope or "active").lower()
+    if data_scope == "active":
+        paths = get_active_artifact_paths()
+        return paths["eda_summary_file"] if file_kind == "eda" else paths["data_quality_file"]
+    if data_scope in {"workspace", "chat_workspace", "llm_workspace"}:
+        paths = get_chat_workspace_paths(chat_id)
+        return paths["results_dir"] / ("eda_summary.csv" if file_kind == "eda" else "data_quality_summary.csv")
+    return EDA_SUMMARY_FILE if file_kind == "eda" else DATA_QUALITY_FILE
+
+
+def get_eda_summary(data_scope="active", chat_id=None):
+    file_path = _resolve_results_file("eda", data_scope=data_scope, chat_id=chat_id)
+    df = _read_csv(file_path)
     return {
         "available": not df.empty,
-        "path": str(EDA_SUMMARY_FILE),
+        "path": str(file_path),
         "records": _json_records(df),
     }
 
 
-def get_data_quality_summary():
-    df = _read_csv(DATA_QUALITY_FILE)
+def get_data_quality_summary(data_scope="active", chat_id=None):
+    file_path = _resolve_results_file("quality", data_scope=data_scope, chat_id=chat_id)
+    df = _read_csv(file_path)
     return {
         "available": not df.empty,
-        "path": str(DATA_QUALITY_FILE),
+        "path": str(file_path),
         "records": _json_records(df),
     }
 
 
-def list_available_figures():
+def list_available_figures(data_scope="active", chat_id=None):
+    data_scope = str(data_scope or "active").lower()
+    if data_scope == "active":
+        figures_dir = get_active_artifact_paths()["figures_dir"]
+    elif data_scope in {"workspace", "chat_workspace", "llm_workspace"}:
+        figures_dir = get_chat_workspace_paths(chat_id)["figures_dir"]
+    else:
+        figures_dir = FIGURES_DIR
     return {
-        "figures": [path.name for path in sorted(FIGURES_DIR.glob("*.png"))],
-        "directory": str(FIGURES_DIR),
+        "figures": [path.name for path in sorted(figures_dir.glob("*.png"))],
+        "directory": str(figures_dir),
     }
 
 
@@ -1740,6 +1903,22 @@ def _configure_eda_module(eda_module):
     eda_module.RESULTS_DIR = EDA_SUMMARY_FILE.parent
     eda_module.SUMMARY_FILE = EDA_SUMMARY_FILE
     eda_module.DATA_QUALITY_FILE = DATA_QUALITY_FILE
+
+
+def _run_eda_for_files(processed_file, figures_dir, results_dir, example_ticker):
+    from src.analysis import eda
+
+    eda.PROCESSED_DATA_FILE = Path(processed_file)
+    eda.FIGURES_DIR = Path(figures_dir)
+    eda.RESULTS_DIR = Path(results_dir)
+    eda.SUMMARY_FILE = Path(results_dir) / "eda_summary.csv"
+    eda.DATA_QUALITY_FILE = Path(results_dir) / "data_quality_summary.csv"
+    eda.run_eda(example_ticker=example_ticker)
+    return {
+        "eda_summary_file": str(eda.SUMMARY_FILE),
+        "data_quality_file": str(eda.DATA_QUALITY_FILE),
+        "figures_dir": str(eda.FIGURES_DIR),
+    }
 
 
 def get_ticker_history(ticker, start_date=None, end_date=None, columns=None, max_rows=500, chat_id=None):
@@ -1847,6 +2026,14 @@ def create_ticker_price_chart(ticker, start_date=None, end_date=None, months=12,
         "first_close": first_close,
         "last_close": last_close,
         "total_return": float(total_return),
+        "active_dataset": (
+            push_llm_workspace_to_app_pages(
+                note=f"Automatically activated {ticker} chart workspace.",
+                chat_id=chat_id,
+            )
+            if data_source == "chat_workspace"
+            else get_active_analysis_dataset_status()
+        ),
         "message": f"Generated price chart for {ticker} from {safe_start} to {safe_end}.",
     }
 
@@ -2267,6 +2454,7 @@ def run_strategy_comparison(data_scope="project", chat_id=None):
             "BuyHold": paths["buy_hold_metrics_file"],
             "MovingAverage": paths["ma_metrics_file"],
             "RSI": paths["rsi_metrics_file"],
+            "PortfolioCEM": paths["portfolio_rl_metrics_file"],
         }
         output_file = paths["strategy_comparison_file"]
         output_scope = "chat_workspace"
@@ -2275,6 +2463,7 @@ def run_strategy_comparison(data_scope="project", chat_id=None):
             "BuyHold": BUY_HOLD_METRICS_FILE,
             "MovingAverage": MA_METRICS_FILE,
             "RSI": RSI_METRICS_FILE,
+            "PortfolioCEM": PORTFOLIO_RL_METRICS_FILE,
         }
         output_file = STRATEGY_COMPARISON_FILE
         output_scope = "project"
@@ -2351,6 +2540,119 @@ def run_portfolio_env_smoke_test(tickers=None, data_scope="auto", chat_id=None, 
         "last_portfolio_value": float(last_info.get("portfolio_value", env.portfolio_value)),
         "last_turnover": float(last_info.get("turnover", env.turnover)),
         "message": "PortfolioEnv smoke test completed with equal-weight actions.",
+    }
+
+
+def run_portfolio_cem_training(
+    tickers=None,
+    data_scope="auto",
+    chat_id=None,
+    initial_cash=100_000.0,
+    transaction_cost_pct=0.001,
+    generations=4,
+    population_size=12,
+    elite_fraction=0.25,
+    noise_scale=0.2,
+    train_ratio=0.7,
+    random_seed=42,
+):
+    from src.training.portfolio_cem import run_portfolio_cem_training as train
+
+    df, selected_tickers, source = _build_strategy_data(tickers=tickers, data_scope=data_scope, chat_id=chat_id)
+    if len(selected_tickers) < 2:
+        raise ValueError("Portfolio CEM training requires at least two tickers.")
+
+    if source == "chat_workspace":
+        paths = get_chat_workspace_paths(chat_id)
+        equity_file = paths["portfolio_rl_equity_file"]
+        metrics_file = paths["portfolio_rl_metrics_file"]
+        model_file = paths["portfolio_rl_model_file"]
+    else:
+        equity_file = PORTFOLIO_RL_EQUITY_FILE
+        metrics_file = PORTFOLIO_RL_METRICS_FILE
+        model_file = PORTFOLIO_RL_MODEL_FILE
+
+    temp_data_file = metrics_file.parent / "portfolio_rl_training_features.csv"
+    temp_data_file.parent.mkdir(parents=True, exist_ok=True)
+    df.to_csv(temp_data_file, index=False)
+
+    result = train(
+        data_file=temp_data_file,
+        tickers=selected_tickers,
+        initial_cash=initial_cash,
+        transaction_cost_pct=transaction_cost_pct,
+        generations=generations,
+        population_size=population_size,
+        elite_fraction=elite_fraction,
+        noise_scale=noise_scale,
+        train_ratio=train_ratio,
+        random_seed=random_seed,
+        equity_file=equity_file,
+        metrics_file=metrics_file,
+        model_file=model_file,
+    )
+    result["data_scope"] = source
+    result["training_data_file"] = str(temp_data_file)
+    comparison_scope = "workspace" if source == "chat_workspace" else "project"
+    result["comparison"] = run_strategy_comparison(data_scope=comparison_scope, chat_id=chat_id)
+    return result
+
+
+def get_portfolio_rl_metrics(data_scope="auto", chat_id=None):
+    data_scope = str(data_scope).lower()
+    if data_scope not in {"auto", "project", "workspace"}:
+        raise ValueError("data_scope must be one of: auto, project, workspace.")
+
+    candidate_files = []
+    if data_scope in {"auto", "project"}:
+        candidate_files.append(("project", PORTFOLIO_RL_METRICS_FILE))
+    if data_scope in {"auto", "workspace"}:
+        candidate_files.append(("chat_workspace", get_chat_workspace_paths(chat_id)["portfolio_rl_metrics_file"]))
+
+    for scope, file_path in candidate_files:
+        df = _read_csv(file_path)
+        if not df.empty:
+            return {
+                "available": True,
+                "data_scope": scope,
+                "path": str(file_path),
+                "records": _json_records(df),
+            }
+
+    return {
+        "available": False,
+        "message": "Portfolio RL metrics are not available. Run run_portfolio_cem_training first.",
+        "records": [],
+    }
+
+
+def get_portfolio_rl_equity_curve(max_rows=1000, data_scope="auto", chat_id=None):
+    data_scope = str(data_scope).lower()
+    if data_scope not in {"auto", "project", "workspace"}:
+        raise ValueError("data_scope must be one of: auto, project, workspace.")
+
+    candidate_files = []
+    if data_scope in {"auto", "project"}:
+        candidate_files.append(("project", PORTFOLIO_RL_EQUITY_FILE))
+    if data_scope in {"auto", "workspace"}:
+        candidate_files.append(("chat_workspace", get_chat_workspace_paths(chat_id)["portfolio_rl_equity_file"]))
+
+    for scope, file_path in candidate_files:
+        df = _read_csv(file_path)
+        if not df.empty:
+            if max_rows and len(df) > int(max_rows):
+                df = df.tail(int(max_rows))
+            return {
+                "available": True,
+                "data_scope": scope,
+                "path": str(file_path),
+                "records": _json_records(df),
+            }
+
+    return {
+        "available": False,
+        "message": "Portfolio RL equity curve is not available. Run run_portfolio_cem_training first.",
+        "records": [],
     }
 
 
@@ -2471,6 +2773,7 @@ def refresh_llm_workspace_data(
     start_date,
     end_date,
     use_proxy=True,
+    run_eda_after=True,
     run_baseline_after=True,
     data_source="auto",
     chat_id=None,
@@ -2559,6 +2862,15 @@ def refresh_llm_workspace_data(
         "message": "Chat workspace data refreshed without modifying the main project dataset.",
     }
 
+    if run_eda_after:
+        eda_result = _run_eda_for_files(
+            processed_file=paths["processed_file"],
+            figures_dir=paths["figures_dir"],
+            results_dir=paths["results_dir"],
+            example_ticker=tickers[0],
+        )
+        result.update(eda_result)
+
     if run_baseline_after:
         buy_hold_result = run_buy_hold_baseline(tickers=tickers, data_scope="workspace", chat_id=chat_id)
         ma_result = run_ma_baseline(tickers=tickers, data_scope="workspace", chat_id=chat_id)
@@ -2575,13 +2887,14 @@ def refresh_llm_workspace_data(
     return result
 
 
-def refresh_llm_workspace_ticker(ticker, start_date, end_date, use_proxy=True, run_baseline_after=True, data_source="auto", chat_id=None):
+def refresh_llm_workspace_ticker(ticker, start_date, end_date, use_proxy=True, run_eda_after=True, run_baseline_after=True, data_source="auto", chat_id=None):
     ticker = normalize_ticker(ticker)
     result = refresh_llm_workspace_data(
         tickers=[ticker],
         start_date=start_date,
         end_date=end_date,
         use_proxy=use_proxy,
+        run_eda_after=run_eda_after,
         run_baseline_after=run_baseline_after,
         data_source=data_source,
         chat_id=chat_id,

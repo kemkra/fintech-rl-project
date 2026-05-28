@@ -3,6 +3,8 @@ import json
 import os
 from pathlib import Path
 import sys
+import threading
+import traceback
 from uuid import uuid4
 
 import pandas as pd
@@ -27,6 +29,7 @@ st.set_page_config(page_title="Financial Market Analysis", layout="wide")
 CONFIG_DIR = PROJECT_ROOT / "config"
 LLM_PREFERENCES_FILE = CONFIG_DIR / "llm_preferences.json"
 LLM_CHATS_FILE = CONFIG_DIR / "llm_chats.json"
+LLM_JOBS_DIR = CONFIG_DIR / "llm_jobs"
 WEB_RUNTIME_ROOT = PROJECT_ROOT / ".streamlit_runtime"
 POPULAR_TICKERS = [
     "AAPL",
@@ -115,7 +118,7 @@ POPULAR_TICKERS = [
 
 
 def init_web_runtime_storage():
-    global CONFIG_DIR, LLM_PREFERENCES_FILE, LLM_CHATS_FILE
+    global CONFIG_DIR, LLM_PREFERENCES_FILE, LLM_CHATS_FILE, LLM_JOBS_DIR
 
     if "web_session_id" not in st.session_state:
         st.session_state["web_session_id"] = uuid4().hex[:12]
@@ -128,6 +131,7 @@ def init_web_runtime_storage():
     CONFIG_DIR = Path(paths["config_dir"])
     LLM_PREFERENCES_FILE = CONFIG_DIR / "llm_preferences.json"
     LLM_CHATS_FILE = CONFIG_DIR / "llm_chats.json"
+    LLM_JOBS_DIR = CONFIG_DIR / "llm_jobs"
     st.session_state["runtime_paths"] = paths
     return paths
 
@@ -261,6 +265,131 @@ def sanitize_llm_result_for_storage(result):
     }
 
 
+def write_json_atomic(path, payload):
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = path.with_suffix(path.suffix + ".tmp")
+    with temp_path.open("w", encoding="utf-8") as file:
+        json.dump(payload, file, ensure_ascii=False, indent=2, default=str)
+    temp_path.replace(path)
+
+
+def read_json_file(path):
+    try:
+        with Path(path).open("r", encoding="utf-8") as file:
+            return json.load(file)
+    except Exception:
+        return None
+
+
+def write_llm_job_status(job_file, status, **fields):
+    payload = {
+        "status": status,
+        "updated_at": datetime.now().isoformat(timespec="seconds"),
+        **fields,
+    }
+    write_json_atomic(job_file, payload)
+    return payload
+
+
+def run_llm_job_in_background(job_file, runtime_session_id, runtime_root, chat_id, question, llm_kwargs):
+    write_llm_job_status(
+        job_file,
+        "running",
+        chat_id=chat_id,
+        question=question,
+        started_at=datetime.now().isoformat(timespec="seconds"),
+    )
+    try:
+        market_tools.configure_runtime_storage(session_id=runtime_session_id, root=runtime_root)
+        result = run_llm_tool_chat(question=question, chat_id=chat_id, **llm_kwargs)
+    except Exception as exc:
+        write_llm_job_status(
+            job_file,
+            "failed",
+            chat_id=chat_id,
+            question=question,
+            error=str(exc),
+            traceback=traceback.format_exc(),
+        )
+    else:
+        write_llm_job_status(
+            job_file,
+            "completed",
+            chat_id=chat_id,
+            question=question,
+            result=sanitize_llm_result_for_storage(result),
+        )
+
+
+def start_llm_background_job(chat, question, llm_kwargs):
+    LLM_JOBS_DIR.mkdir(parents=True, exist_ok=True)
+    job_id = uuid4().hex[:12]
+    job_file = LLM_JOBS_DIR / f"{job_id}.json"
+    now = datetime.now().isoformat(timespec="seconds")
+    chat["messages"].append({"role": "user", "content": question})
+    chat["pending_job"] = {
+        "job_id": job_id,
+        "job_file": str(job_file),
+        "question": question,
+        "started_at": now,
+    }
+    chat["updated_at"] = now
+    write_llm_job_status(job_file, "queued", chat_id=chat["id"], question=question, started_at=now)
+    save_llm_chats_to_disk()
+
+    worker = threading.Thread(
+        target=run_llm_job_in_background,
+        kwargs={
+            "job_file": str(job_file),
+            "runtime_session_id": st.session_state["web_session_id"],
+            "runtime_root": str(Path(os.getenv("FINTECH_RUNTIME_ROOT", WEB_RUNTIME_ROOT))),
+            "chat_id": chat["id"],
+            "question": question,
+            "llm_kwargs": llm_kwargs,
+        },
+        daemon=True,
+    )
+    worker.start()
+    return job_id
+
+
+def reconcile_llm_job(chat):
+    pending_job = chat.get("pending_job")
+    if not pending_job:
+        return None
+
+    job_status = read_json_file(pending_job.get("job_file"))
+    if not job_status:
+        return {"status": "unknown", "message": "Waiting for job status file."}
+
+    status = job_status.get("status")
+    if status == "completed":
+        result = job_status.get("result") or {}
+        answer = result.get("answer", "")
+        chat["messages"].append({"role": "assistant", "content": answer})
+        chat["memory_summary"] = build_memory_summary(chat["messages"])
+        chat["last_result"] = result
+        chat["updated_at"] = job_status.get("updated_at") or datetime.now().isoformat(timespec="seconds")
+        chat.pop("pending_job", None)
+        save_llm_chats_to_disk()
+        clear_cache()
+    elif status == "failed":
+        error = job_status.get("error", "Unknown error")
+        chat["messages"].append({"role": "assistant", "content": f"LLM call failed: {error}"})
+        chat["last_result"] = {
+            "answer": f"LLM call failed: {error}",
+            "provider": None,
+            "model": None,
+            "tools": [],
+            "log_path": None,
+        }
+        chat["updated_at"] = job_status.get("updated_at") or datetime.now().isoformat(timespec="seconds")
+        chat.pop("pending_job", None)
+        save_llm_chats_to_disk()
+    return job_status
+
+
 def load_llm_chats_from_disk():
     if not LLM_CHATS_FILE.exists():
         return None
@@ -280,6 +409,7 @@ def load_llm_chats_from_disk():
         chat.setdefault("messages", [])
         chat.setdefault("memory_summary", "")
         chat.setdefault("last_result", None)
+        chat.setdefault("pending_job", None)
         chat.setdefault("title", "Chat")
         chat.setdefault("created_at", datetime.now().isoformat(timespec="seconds"))
         chat.setdefault("updated_at", chat["created_at"])
@@ -346,6 +476,7 @@ def clear_current_llm_chat():
     chat["messages"] = []
     chat["memory_summary"] = ""
     chat["last_result"] = None
+    chat["pending_job"] = None
     if not chat["title"]:
         chat["title"] = make_chat_title(get_next_chat_number(st.session_state["llm_chats"]))
     chat["updated_at"] = datetime.now().isoformat(timespec="seconds")
@@ -529,31 +660,26 @@ def page_data_setup(df):
     show_current_data_snapshot()
 
     active_status = market_tools.get_active_analysis_dataset_status()
-    active_chat_id = active_status.get("chat_id")
-    col_merge, col_clear = st.columns(2)
-    if col_merge.button("Merge AI chat workspace into project", use_container_width=True):
-        with st.spinner("Merging AI chat workspace data into the main project dataset..."):
-            try:
-                result = market_tools.merge_llm_workspace_to_project(chat_id=active_chat_id)
-            except Exception as exc:
-                st.error(f"Merge failed: {exc}")
-            else:
-                clear_cache()
-                st.success("AI chat workspace data merged into project dataset.")
-                st.json(result)
-                st.rerun()
-    if col_clear.button("Clear AI chat workspace", use_container_width=True):
-        result = market_tools.clear_llm_workspace(chat_id=active_chat_id)
-        clear_cache()
-        st.success(result["message"])
-        st.rerun()
-
     if active_status["source"] != "project":
-        if st.button("Reset pages to main project dataset", use_container_width=True):
+        col_reset, col_merge = st.columns(2)
+        if col_reset.button("Show main loaded dataset", use_container_width=True):
             result = market_tools.reset_app_pages_to_project_dataset()
             clear_cache()
             st.success(result["message"])
             st.rerun()
+        with col_merge.expander("Developer merge"):
+            st.caption("Optional: copy the active AI workspace into the main project dataset.")
+            if st.button("Merge active AI workspace", use_container_width=True):
+                with st.spinner("Merging AI chat workspace data into the main project dataset..."):
+                    try:
+                        result = market_tools.merge_llm_workspace_to_project(chat_id=active_status.get("chat_id"))
+                    except Exception as exc:
+                        st.error(f"Merge failed: {exc}")
+                    else:
+                        clear_cache()
+                        st.success("AI chat workspace data merged into project dataset.")
+                        st.json(result)
+                        st.rerun()
 
     with st.expander("Load market data", expanded=False):
         st.session_state.setdefault("symbol_refresh_token", 0)
@@ -573,10 +699,7 @@ def page_data_setup(df):
             selected_ticker_values = st.multiselect(
                 "Tickers",
                 ticker_options,
-                default=[
-                    option for option in ticker_options
-                    if option.split("|", 1)[0].strip() in {"AAPL", "MSFT", "QQQ", "SPY"}
-                ][:4],
+                default=[],
                 accept_new_options=True,
                 filter_mode="fuzzy",
                 placeholder="Search or type a ticker, then press Enter",
@@ -619,9 +742,11 @@ def page_data_setup(df):
                     except Exception as exc:
                         st.error(f"Refresh failed: {exc}")
                     else:
+                        market_tools.reset_app_pages_to_project_dataset(note="Activated newly loaded market data.")
                         clear_cache()
                         st.success("Data refresh completed.")
                         st.json(result)
+                        st.rerun()
 
     if not df.empty:
         with st.expander("Processed data preview", expanded=False):
@@ -665,8 +790,10 @@ def page_explorer(df):
 def page_eda():
     st.subheader("EDA Results")
 
-    eda_summary = load_summary(market_tools.EDA_SUMMARY_FILE)
-    quality_summary = load_summary(market_tools.DATA_QUALITY_FILE)
+    active_status = market_tools.get_active_analysis_dataset_status()
+    st.caption(f"Using {active_status['label']}: {active_status['processed_file']}")
+    eda_summary = load_summary(active_status["eda_summary_file"])
+    quality_summary = load_summary(active_status["data_quality_file"])
     tab1, tab2, tab3 = st.tabs(["Asset Summary", "Data Quality", "Figures"])
 
     with tab1:
@@ -682,13 +809,14 @@ def page_eda():
             st.dataframe(quality_summary, use_container_width=True, height=420)
 
     with tab3:
-        figures = market_tools.list_available_figures()["figures"]
+        figure_result = market_tools.list_available_figures(data_scope="active")
+        figures = figure_result["figures"]
         if not figures:
             st.info("No generated figures found.")
             return
 
         figure_name = st.selectbox("Figure", figures)
-        figure_path = market_tools.FIGURES_DIR / figure_name
+        figure_path = Path(figure_result["directory"]) / figure_name
         st.image(str(figure_path), use_container_width=True)
 
 
@@ -737,6 +865,11 @@ def page_ai_assistant():
 
     with main_column:
         chat = get_current_llm_chat()
+        job_status = reconcile_llm_job(chat)
+        if job_status and job_status.get("status") == "completed":
+            st.success("LLM answer is ready.")
+        elif job_status and job_status.get("status") == "failed":
+            st.error(f"LLM call failed: {job_status.get('error', 'Unknown error')}")
 
         provider_names = list(PROVIDER_PRESETS.keys())
         preferred_provider = preferences.get("provider_name", "Alibaba Bailian")
@@ -848,43 +981,42 @@ def page_ai_assistant():
             with st.expander("Context memory summary", expanded=False):
                 st.write(chat["memory_summary"])
         render_chat_messages(chat)
+        pending_job = chat.get("pending_job")
+        if pending_job:
+            current_status = read_json_file(pending_job.get("job_file")) or {"status": "queued"}
+            st.info(
+                "LLM job is running in the background. "
+                f"Status: {current_status.get('status', 'queued')}. "
+                "You can switch pages and come back later."
+            )
 
         question = st.text_area("Question", height=120, key=f"question_{chat['id']}")
 
-        if st.button("Ask LLM", type="primary"):
+        if st.button("Ask LLM", type="primary", disabled=bool(pending_job)):
             if not api_key and provider_name not in {"Ollama Local", "LM Studio Local"}:
                 st.error("Please enter your API key.")
             elif not question.strip():
                 st.error("Please enter a question.")
             else:
-                with st.spinner("Calling LLM and local tools..."):
-                    try:
-                        result = run_llm_tool_chat(
-                            question=question,
-                            api_key=api_key,
-                            provider_name=provider_name,
-                            model=model,
-                            base_url=base_url,
-                            memory_summary=chat.get("memory_summary"),
-                            context_messages=get_recent_context_messages(chat),
-                            allow_write_tools=allow_write_tools,
-                            max_tool_rounds=max_tool_rounds,
-                            request_timeout=request_timeout,
-                            max_elapsed_seconds=max_elapsed_seconds,
-                            save_debug_log=save_debug_log,
-                            chat_id=chat["id"],
-                        )
-                    except Exception as exc:
-                        st.error(f"LLM call failed: {exc}")
-                    else:
-                        now = datetime.now().isoformat(timespec="seconds")
-                        chat["messages"].append({"role": "user", "content": question})
-                        chat["messages"].append({"role": "assistant", "content": result["answer"]})
-                        chat["memory_summary"] = build_memory_summary(chat["messages"])
-                        chat["last_result"] = result
-                        chat["updated_at"] = now
-                        save_llm_chats_to_disk()
-                        render_llm_result(result)
+                start_llm_background_job(
+                    chat=chat,
+                    question=question,
+                    llm_kwargs={
+                        "api_key": api_key,
+                        "provider_name": provider_name,
+                        "model": model,
+                        "base_url": base_url,
+                        "memory_summary": chat.get("memory_summary"),
+                        "context_messages": get_recent_context_messages(chat),
+                        "allow_write_tools": allow_write_tools,
+                        "max_tool_rounds": max_tool_rounds,
+                        "request_timeout": request_timeout,
+                        "max_elapsed_seconds": max_elapsed_seconds,
+                        "save_debug_log": save_debug_log,
+                    },
+                )
+                st.success("LLM job started in the background. You can switch pages now.")
+                st.rerun()
         elif chat.get("last_result"):
             st.divider()
             st.subheader("Last LLM Answer")
@@ -893,7 +1025,7 @@ def page_ai_assistant():
 
 def page_baselines():
     st.subheader("Baseline Strategy Results")
-    st.write("Current baselines: Buy & Hold, Moving Average crossover, and RSI threshold strategy.")
+    st.write("Current strategies: Buy & Hold, Moving Average crossover, RSI threshold strategy, and lightweight Portfolio CEM.")
 
     active_status = market_tools.get_active_analysis_dataset_status()
     active_source = active_status["source"]
@@ -922,7 +1054,43 @@ def page_baselines():
         if comparison.empty:
             st.info("Strategy comparison is not available yet. Build it after baseline metrics exist.")
         else:
+            st.caption("Portfolio CEM is portfolio-level; the other rows are single-asset strategy results.")
             st.dataframe(comparison, use_container_width=True, height=240)
+
+    st.divider()
+
+    st.markdown("**Portfolio RL Training**")
+    rl_metrics_file = (
+        workspace_paths["portfolio_rl_metrics_file"]
+        if active_is_workspace
+        else market_tools.PORTFOLIO_RL_METRICS_FILE
+    )
+    rl_metrics = load_summary(rl_metrics_file)
+    rl_col_a, rl_col_b = st.columns([1, 3])
+    with rl_col_a:
+        if st.button("Run Portfolio CEM"):
+            with st.spinner("Training lightweight portfolio policy..."):
+                result = market_tools.run_portfolio_cem_training(
+                    data_scope=data_scope,
+                    chat_id=active_chat_id,
+                )
+                clear_cache()
+                st.success("Portfolio CEM training completed.")
+                st.json(result)
+    with rl_col_b:
+        if rl_metrics.empty:
+            st.info("Portfolio RL metrics are not available yet.")
+        else:
+            st.dataframe(rl_metrics, use_container_width=True, height=160)
+            rl_equity_result = market_tools.get_portfolio_rl_equity_curve(
+                max_rows=5000,
+                data_scope=data_scope,
+                chat_id=active_chat_id,
+            )
+            if rl_equity_result["available"]:
+                rl_equity_df = pd.DataFrame(rl_equity_result["records"])
+                rl_equity_df["Date"] = pd.to_datetime(rl_equity_df["Date"])
+                st.line_chart(rl_equity_df.set_index("Date")[["Portfolio_Value"]])
 
     st.divider()
 
@@ -978,6 +1146,7 @@ def page_tool_api_preview():
     st.code(
         """
 get_dataset_status()
+get_project_capabilities()
 get_runtime_storage_status()
 list_tool_proposals(limit=50, status=None)
 list_temp_composite_tools()
@@ -1002,12 +1171,11 @@ propose_new_tool(tool_name, user_need, inputs=None, outputs=None)
 register_temp_composite_tool(tool_name, base_tool, preset_arguments=None, filters=None)
 promote_tool_proposal_local(proposal_id=None, proposal_file=None)
 load_shortlist_for_analysis(tickers, start_date, end_date, chat_id=None)
-refresh_llm_workspace_data(tickers, start_date, end_date, data_source="auto", use_proxy=True, chat_id=None)
-refresh_llm_workspace_ticker(ticker, start_date, end_date, data_source="auto", use_proxy=True, chat_id=None)
+refresh_llm_workspace_data(tickers, start_date, end_date, data_source="auto", use_proxy=False, chat_id=None)
+refresh_llm_workspace_ticker(ticker, start_date, end_date, data_source="auto", use_proxy=False, chat_id=None)
 push_llm_workspace_to_app_pages(note=None, chat_id=None)
 reset_app_pages_to_project_dataset(note=None)
 merge_llm_workspace_to_project(tickers=None, chat_id=None)
-clear_llm_workspace(chat_id=None)
 run_buy_hold_baseline(tickers=None, initial_cash=100000)
 get_buy_hold_metrics(ticker=None)
 get_buy_hold_equity_curve(ticker, max_rows=500)
@@ -1020,6 +1188,9 @@ get_rsi_equity_curve(ticker, max_rows=500)
 run_strategy_comparison(data_scope="project")
 get_strategy_comparison(ticker=None, data_scope="auto")
 run_portfolio_env_smoke_test(tickers=None, data_scope="auto", max_steps=5)
+run_portfolio_cem_training(tickers=None, data_scope="auto", generations=4, population_size=12)
+get_portfolio_rl_metrics(data_scope="auto")
+get_portfolio_rl_equity_curve(max_rows=1000, data_scope="auto")
         """.strip(),
         language="python",
     )
@@ -1112,4 +1283,4 @@ else:
     page_tool_proposals()
 
 st.divider()
-st.caption("Baseline strategies, portfolio environment, and RL results will be added as saved artifacts.")
+st.caption("Baseline strategies, portfolio environment checks, and lightweight RL results are saved as runtime artifacts.")

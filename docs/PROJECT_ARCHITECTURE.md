@@ -8,8 +8,8 @@ Required course modules and project mapping:
 
 | Course Requirement | Project Module | Output |
 | --- | --- | --- |
-| Data file reading | `src/data/download_data.py` | `data/raw/*.csv` |
-| Data preprocessing | `src/features/feature_engineering.py` | `data/processed/stock_features.csv` |
+| Data file reading | `src/data/download_data.py` | runtime raw CSV cache |
+| Data preprocessing | `src/features/feature_engineering.py` | runtime processed feature dataset |
 | Data analysis methods | EDA, baseline strategies, RL agent | summary tables, strategy results |
 | Data visualization | `src/analysis/`, `src/visualization/`, Streamlit charts | `reports/figures/`, Web charts |
 | Interactive analysis and basic Q&A | `app/streamlit_app.py`, AI assistant module | user questions, generated explanations |
@@ -43,6 +43,7 @@ The system will allow users to:
 Data Layer
   raw market CSVs
   processed feature dataset
+  runtime/session storage
 
 Analysis Layer
   EDA
@@ -56,17 +57,18 @@ Artifact Layer
   equity curves
   action logs
   trained models
+  LLM job status files
 
 Web/UI Layer
   Streamlit dashboard
   interactive filters
   charts
-  basic AI question answering
+  LLM tool-calling assistant
 
 Documentation Layer
   README
-  PPT
-  demo video
+  final report
+  demo notes
   AI usage report
 ```
 
@@ -150,7 +152,7 @@ Core interactions:
 * Select tickers
 * Search ticker symbols from the cached Nasdaq Trader Symbol Directory
 * Select start date and end date
-* Choose stable local data mode or online download mode
+* Choose automatic cache reuse or online download mode
 * Optionally enable Clash proxy
 * Trigger `Load & Process Data`
 * Show raw / processed data preview
@@ -179,10 +181,10 @@ Purpose:
 
 Strategies:
 
-* Buy-and-Hold
+* Buy & Hold
 * Moving Average crossover
 * RSI strategy
-* Random strategy
+* Lightweight Portfolio CEM
 
 Outputs:
 
@@ -251,6 +253,11 @@ get_rsi_metrics
 get_rsi_equity_curve
 run_strategy_comparison
 get_strategy_comparison
+run_portfolio_env_smoke_test
+run_portfolio_cem_training
+get_portfolio_rl_metrics
+get_portfolio_rl_equity_curve
+get_project_capabilities
 get_active_analysis_dataset_status
 push_llm_workspace_to_app_pages
 reset_app_pages_to_project_dataset
@@ -297,6 +304,7 @@ Chat context:
 * Chat history is saved locally in `config/llm_chats.json`, separate from API key preferences.
 * LLM calls receive the compact memory summary plus recent messages from the active chat only.
 * Full tool results are kept in debug logs and are not automatically injected into future context.
+* LLM calls run as background jobs in the Web app. Switching Streamlit pages should not interrupt ordinary in-progress requests, although a full server process restart still stops running jobs.
 
 Debug logs:
 
@@ -320,6 +328,7 @@ Workspace storage:
 .streamlit_runtime/sessions/<session_id>/raw/          session raw cache
 .streamlit_runtime/sessions/<session_id>/processed/    session main processed dataset
 .streamlit_runtime/sessions/<session_id>/workspaces/   per-chat processed/results/figures
+.streamlit_runtime/sessions/<session_id>/config/llm_jobs/ background LLM job status
 ```
 
 Raw market CSV files are shared within one Web session, not across all visitors. Chat-level separation is most useful for processed datasets, figures, and strategy results because those represent a temporary analytical view rather than reusable source data.
@@ -362,20 +371,18 @@ The RL component should be positioned as an advanced analysis feature, not the o
 
 Current stage:
 
-* `TradingEnv`: single-asset trading environment
-* Discrete actions: hold / buy / sell
-
-Planned extension:
-
+* `TradingEnv`: single-asset trading environment with hold / buy / sell actions
 * `PortfolioEnv`: multi-asset portfolio management environment
-* Continuous actions: allocation weights across assets
+* Portfolio actions: continuous non-negative allocation weights across cash and assets
+* `Portfolio CEM`: lightweight RL-style training scaffold with saved metrics, equity curve, training history, and policy weights
 
 Practical delivery path:
 
 1. First finish EDA and baseline strategies.
 2. Build multi-asset portfolio environment.
-3. Add RL training if time permits.
-4. Use Web UI to compare RL against baselines.
+3. Add lightweight RL-style training.
+4. Use Web UI to compare portfolio RL against traditional baselines.
+5. Add heavier PPO/DQN only if time permits.
 
 ## 7. Required Submission Materials
 
@@ -385,8 +392,8 @@ The final submission should include:
 * Test data with more than 1000 rows
 * Data processing scripts
 * README with setup and run instructions
-* PPT for class presentation
-* Demo video or live demo
+* Final report or demo notes
+* Demo video or live demo if required by the course
 * AI usage report and reflection
 * Code source notes at function or file level where practical
 

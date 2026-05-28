@@ -181,8 +181,8 @@ Detailed architecture:
 
 * [x] Per-chat AI analysis workspace
 
-  * Uses `data/raw/` as the shared raw market data cache for both UI and LLM workflows
-  * Stores AI-generated processed data, figures, and strategy results under `data/workspaces/chats/<chat_id>/`
+  * Uses per-session runtime raw storage as the shared raw market data cache for both UI and LLM workflows
+  * Stores AI-generated processed data, figures, and strategy results under `.streamlit_runtime/sessions/<session_id>/workspaces/chats/<chat_id>/`
   * Automatically passes the active Chat ID into LLM workspace tools
   * Updated active dataset push/reset so normal app pages can inspect a specific Chat workspace
 
@@ -234,6 +234,12 @@ Detailed architecture:
     * Temporary tools support preset arguments, simple record filters, sorting, selected columns, and row limits
     * They are exposed to the LLM in the current Web session without writing Python code or affecting other sessions
     * Tool Proposals page now shows temporary composite tools registered in the session
+  * Refined active dataset flow across Web pages:
+    * Manual Data Setup loads now reset pages to the main loaded project dataset and rerun immediately
+    * AI workspace refreshes generate workspace EDA summaries and figures
+    * `EDA Results` follows the active dataset's summaries and figures instead of always reading project reports
+    * Price chart generation from a Chat workspace automatically activates that workspace for app-page inspection
+    * Removed the ordinary `Clear AI workspace` control from Data Setup and moved merge behind a developer expander
 
 * [x] LLM natural-language analysis prototype
 
@@ -286,20 +292,66 @@ Detailed architecture:
   * Observation combines normalized market features with current portfolio state
   * Added `run_portfolio_env_smoke_test()` to the tool layer for lightweight validation from the app/LLM side
 
+* [x] Lightweight portfolio RL training scaffold
+
+  * Implemented `src/training/portfolio_cem.py`
+  * Uses a linear softmax allocation policy over cash plus selected assets
+  * Trains with Cross-Entropy Method as a lightweight, dependency-free RL-style baseline before heavier DQN/PPO work
+  * Saves equity curve, metrics, training history, and policy weights as runtime artifacts
+  * Exposed `run_portfolio_cem_training()`, `get_portfolio_rl_metrics()`, and `get_portfolio_rl_equity_curve()` to the tool layer and LLM function-calling interface
+  * Added a Portfolio RL Training block to the Baseline Results page
+
+* [x] Strategy comparison including portfolio RL
+
+  * Extended `src/evaluation/strategy_comparison.py` to include Portfolio CEM metrics when available
+  * Added `Asset_Set` and `comparison_level` fields so single-asset strategy rows and portfolio-level RL rows are not confused
+  * Rebuilds the comparison table automatically after Portfolio CEM training
+  * Updated Streamlit and LLM descriptions to present the comparison as traditional baselines plus portfolio RL
+
+* [x] User-facing capability explanation
+
+  * Added `get_project_capabilities()` to the tool layer
+  * Exposed it to the LLM function-calling interface
+  * Updated the assistant prompt so questions like "你可以做什么" or "这个项目能解决什么问题" produce a structured project capability overview
+
+* [x] Background LLM job handling in Streamlit
+
+  * Replaced synchronous AI Assistant calls with background thread jobs
+  * Stores job status and sanitized results under the current runtime config directory
+  * Keeps pending jobs attached to the current Chat so users can switch pages and return later
+  * Merges completed answers back into chat history and clears cached data views after tool-generated artifacts are ready
+
+* [x] Project handoff readiness audit
+
+  * Added a top-level `README.md` with local setup, Streamlit Community deployment, runtime storage, LLM providers, and example questions
+  * Updated `docs/PROJECT_ARCHITECTURE.md` to match the current runtime/session architecture and Portfolio CEM scope
+  * Updated `pyproject.toml` project description
+  * Rechecked Python syntax, ignored runtime files, and deployment entry-point guidance
+
+* [x] Final end-to-end acceptance test
+
+  * Verified the runtime tool pipeline with deterministic synthetic market data
+  * Generated EDA summaries and figures
+  * Ran Buy & Hold, Moving Average, RSI, and Portfolio CEM
+  * Verified the unified strategy comparison includes all four strategy types
+  * Verified key LLM tool schemas are exposed
+  * Started the Streamlit app and confirmed the Web UI loads successfully
+
 ---
 
 ### In Progress
 
-* [ ] RL model training
+* [x] Core project complete
 
 ---
 
 ### Future Tasks
 
-* [ ] RL model training
-* [ ] Strategy comparison and performance analysis
+* [ ] Add heavier RL algorithms such as PPO or DQN if time permits
+* [x] Strategy comparison and performance analysis
 * [ ] Streamlit Web UI refinement
-* [ ] Final report
+* [x] Final report
+* [x] AI Assistant usage guide
 
 ---
 
@@ -355,23 +407,23 @@ app/
 ## 3.2 Artifact Flow
 
 ```text
-data/raw/*.csv
-  Produced by src/data/download_data.py
+.streamlit_runtime/sessions/<session_id>/raw/*.csv
+  Produced or reused by src/data/download_data.py through the Web/runtime tool layer
 
-data/processed/stock_features.csv
-  Produced by src/features/feature_engineering.py
+.streamlit_runtime/sessions/<session_id>/processed/stock_features.csv
+  Produced by src/features/feature_engineering.py through the Web/runtime tool layer
 
-reports/figures/
-  Produced by src/analysis/eda.py and src/visualization/
+.streamlit_runtime/sessions/<session_id>/reports/figures/
+  Produced by src/analysis/eda.py and chart-generation tools
 
-reports/results/
-  Stores strategy equity curves, trades, and metrics tables
+.streamlit_runtime/sessions/<session_id>/reports/results/
+  Stores strategy equity curves, metrics tables, EDA summaries, and comparison tables
 
-models/
-  Stores trained RL models
+.streamlit_runtime/sessions/<session_id>/models/
+  Stores lightweight portfolio policy artifacts
 
 app/
-  Reads data/processed/, reports/results/, reports/figures/, and models/
+  Reads the active runtime dataset and artifacts selected by the active dataset pointer
 ```
 
 ## 3.3 Web / UI Design
@@ -397,7 +449,7 @@ Planned pages:
 
 3. Strategy Backtest
 
-   * Select Buy-and-Hold, MA, RSI, Random, or RL strategy
+   * Select Buy & Hold, MA, RSI, or Portfolio CEM strategy
    * Show equity curve
    * Show trade markers
    * Show performance metrics

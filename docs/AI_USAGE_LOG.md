@@ -236,12 +236,73 @@ This document records how AI tools were used during the project. It will be expa
 * Verification method: Compiled changed modules and smoke-tested screening with local raw fallback during yfinance rate limiting.
 * Final result: The LLM can now screen a broad candidate universe, return a shortlist, and then trigger deeper analysis only for that shortlist.
 
-## Reflection Draft
+## Final Reflection
 
-To be completed before final submission:
+### Key human decisions
 
-* Which key decisions were made by the student
-* Which AI suggestions were accepted or rejected
-* Where AI was most helpful
-* Where AI was misleading or incomplete
-* How outputs were verified
+The student made several important design decisions during the project:
+
+* Position the project as an intelligent financial market analysis Web application, with RL as an advanced module rather than the only focus.
+* Keep Streamlit as the main Web framework because it is fast to prototype and suitable for course demonstration.
+* Separate business logic from Streamlit page code by moving reusable operations into `src/tools/market_tools.py`.
+* Use per-session runtime storage for Streamlit deployment so other users can access the app without depending on the developer's local data files.
+* Treat AI-generated analysis data as temporary Chat workspace data unless explicitly pushed or merged.
+* Use lightweight Portfolio CEM training as a practical RL-style scaffold before adding heavier PPO/DQN algorithms.
+
+### AI suggestions accepted
+
+The student accepted AI suggestions that improved modularity, deployability, and usability:
+
+* Feature engineering with grouped ticker operations to avoid cross-asset leakage.
+* JSON-friendly tool functions for future LLM / MCP expansion.
+* Per-chat AI workspace design.
+* Runtime storage for Streamlit Community compatibility.
+* Background LLM jobs to reduce page-switch interruption.
+* A capability tool so the assistant can clearly answer what the system can do.
+
+### AI suggestions modified or rejected
+
+Some AI suggestions were adjusted by the student:
+
+* The early rule-based Offline Assistant was removed because the LLM tool-calling assistant became the main interaction path.
+* Hard-coded ticker translation was replaced with LLM-proposed candidates plus validation.
+* The project did not move immediately to a heavier Web stack because Streamlit was still sufficient after optimization.
+* Full PPO/DQN training was postponed because the project first needed a reliable end-to-end data, Web, and evaluation workflow.
+
+### Where AI was most helpful
+
+AI was most useful for:
+
+* breaking the project into implementable modules
+* debugging yfinance data formats and proxy behavior
+* designing reusable tool interfaces
+* keeping the Web app aligned with the backend architecture
+* expanding LLM workflows from simple Q&A to tool-using analysis
+* updating documentation and TODO / plan files as the architecture evolved
+
+### Where AI needed human correction
+
+AI sometimes needed correction when:
+
+* it assumed the local dataset was the only possible source of analysis
+* it initially relied on limited ticker-name mappings
+* it produced workflows that were too manual for broad stock-discovery questions
+* it suggested or preserved older workspace paths after the runtime/session architecture changed
+
+These issues were corrected through user feedback and code revisions.
+
+### Verification methods
+
+The project used several verification methods:
+
+* Python syntax checks with `py_compile`
+* `git diff --check` for formatting and whitespace issues
+* smoke tests with synthetic market data
+* direct tool calls from Python
+* Streamlit runtime checks
+* search-based audits for stale paths and outdated documentation
+* manual review of generated CSV/JSON/figure artifacts
+
+### Final assessment
+
+AI significantly accelerated implementation and documentation, but the student remained responsible for architecture decisions, safety boundaries, project scope, verification, and final acceptance of generated code.

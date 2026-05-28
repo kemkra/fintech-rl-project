@@ -6,6 +6,9 @@ dist/
 wheels/
 *.egg-info
 
+# macOS Finder metadata
+.DS_Store
+
 # Virtual environments
 .venv
 
@@ -14,6 +17,7 @@ config/llm_preferences.json
 
 # Local chat history may contain private prompts or analysis
 config/llm_chats.json
+config/llm_jobs/
 
 # Local UI state for which dataset is shown in app pages
 config/active_analysis_dataset.json

@@ -57,6 +57,7 @@ You are a financial data analysis assistant for a student project.
 Your job is to deliver the final analysis result, not to make the user manage data files.
 Treat cached/raw/processed data as an internal working medium. Do not repeatedly ask for permission to download or refresh ordinary market data when write tools are enabled.
 Use tools when the user asks about dataset status, ticker metrics, EDA results, baseline strategy comparison, figures, or ticker history.
+If the user asks what this project/app/assistant can do, what problems it can solve, or how to use it, call get_project_capabilities and answer from that capability map.
 If the user asks what local data is available, call get_local_data_inventory so the answer includes both processed data and raw CSV files.
 If the user asks for a chart, visual, recent performance, baseline strategy results, or a comparison for known tickers, use prepare_ticker_analysis when write tools are enabled.
 If the user asks to discover promising stocks, find stocks worth researching, screen buy candidates, or analyze a theme/industry, use analyze_theme_candidates when write tools are enabled.
@@ -73,12 +74,21 @@ If validation fails because of network/rate limits, ask the user to confirm the 
 For "recent", "last year", or similar requests, choose a reasonable default lookback period such as 1y unless the user specifies dates.
 Only ask follow-up questions when the request is genuinely ambiguous, very broad/expensive, requests real trading instructions, or needs paid/private credentials.
 If the user wants to inspect the AI Chat workspace data in other app pages, call push_llm_workspace_to_app_pages.
+When you generate charts or refresh workspace data for the user's analysis, make sure the workspace is active for app pages. The chart tool and workflow tools usually do this automatically.
 Explain results clearly and mention whether outputs are based on the main project data or the current Chat workspace.
 Do not provide investment advice. Frame conclusions as historical analysis.
 """.strip()
 
 
 TOOL_SCHEMAS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "get_project_capabilities",
+            "description": "Get a clear user-facing overview of what this financial analysis and RL trading project can currently do, including examples and limitations.",
+            "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
+        },
+    },
     {
         "type": "function",
         "function": {
@@ -407,7 +417,7 @@ TOOL_SCHEMAS = [
         "type": "function",
         "function": {
             "name": "get_strategy_comparison",
-            "description": "Get the unified baseline strategy comparison table across Buy & Hold, Moving Average, and RSI.",
+            "description": "Get the unified strategy comparison table across Buy & Hold, Moving Average, RSI, and Portfolio CEM when available.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -429,6 +439,35 @@ TOOL_SCHEMAS = [
                     "tickers": {"type": "array", "items": {"type": "string"}},
                     "data_scope": {"type": "string", "enum": ["auto", "project", "workspace"], "default": "auto"},
                     "max_steps": {"type": "integer", "minimum": 1, "maximum": 50, "default": 5},
+                },
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_portfolio_rl_metrics",
+            "description": "Get saved metrics for the lightweight multi-asset portfolio RL/CEM training run.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "data_scope": {"type": "string", "enum": ["auto", "project", "workspace"], "default": "auto"},
+                },
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_portfolio_rl_equity_curve",
+            "description": "Get the saved equity curve from the lightweight multi-asset portfolio RL/CEM training run.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "max_rows": {"type": "integer", "minimum": 1, "maximum": 5000, "default": 1000},
+                    "data_scope": {"type": "string", "enum": ["auto", "project", "workspace"], "default": "auto"},
                 },
                 "additionalProperties": False,
             },
@@ -506,11 +545,38 @@ WRITE_TOOL_SCHEMAS = [
         "type": "function",
         "function": {
             "name": "run_strategy_comparison",
-            "description": "Build or rebuild the unified baseline strategy comparison table.",
+            "description": "Build or rebuild the unified strategy comparison table across traditional baselines and Portfolio CEM when available.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "data_scope": {"type": "string", "enum": ["project", "workspace"], "default": "project"},
+                },
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "run_portfolio_cem_training",
+            "description": "Train and evaluate a lightweight multi-asset portfolio policy using Cross-Entropy Method. This is a course-friendly RL training scaffold, not investment advice.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "tickers": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Optional list of at least two tickers. If omitted, train on the selected data scope.",
+                    },
+                    "data_scope": {"type": "string", "enum": ["auto", "project", "workspace"], "default": "auto"},
+                    "initial_cash": {"type": "number", "default": 100000},
+                    "transaction_cost_pct": {"type": "number", "default": 0.001},
+                    "generations": {"type": "integer", "minimum": 1, "maximum": 50, "default": 4},
+                    "population_size": {"type": "integer", "minimum": 4, "maximum": 200, "default": 12},
+                    "elite_fraction": {"type": "number", "minimum": 0.05, "maximum": 0.8, "default": 0.25},
+                    "noise_scale": {"type": "number", "minimum": 0.001, "maximum": 5, "default": 0.2},
+                    "train_ratio": {"type": "number", "minimum": 0.3, "maximum": 0.9, "default": 0.7},
+                    "random_seed": {"type": "integer", "default": 42},
                 },
                 "additionalProperties": False,
             },
@@ -779,6 +845,7 @@ WRITE_TOOL_SCHEMAS = [
 
 
 TOOL_FUNCTIONS = {
+    "get_project_capabilities": market_tools.get_project_capabilities,
     "get_dataset_status": market_tools.get_dataset_status,
     "get_runtime_storage_status": market_tools.get_runtime_storage_status,
     "list_local_raw_data": market_tools.list_local_raw_data,
@@ -806,6 +873,9 @@ TOOL_FUNCTIONS = {
     "get_rsi_equity_curve": market_tools.get_rsi_equity_curve,
     "get_strategy_comparison": market_tools.get_strategy_comparison,
     "run_portfolio_env_smoke_test": market_tools.run_portfolio_env_smoke_test,
+    "run_portfolio_cem_training": market_tools.run_portfolio_cem_training,
+    "get_portfolio_rl_metrics": market_tools.get_portfolio_rl_metrics,
+    "get_portfolio_rl_equity_curve": market_tools.get_portfolio_rl_equity_curve,
     "run_buy_hold_baseline": market_tools.run_buy_hold_baseline,
     "run_ma_baseline": market_tools.run_ma_baseline,
     "run_rsi_baseline": market_tools.run_rsi_baseline,
@@ -874,6 +944,7 @@ def execute_tool_call(name, arguments, allow_write_tools=False, chat_id=None):
         "run_rsi_baseline",
         "run_strategy_comparison",
         "run_portfolio_env_smoke_test",
+        "run_portfolio_cem_training",
         "screen_stock_candidates",
         "prepare_ticker_analysis",
         "analyze_theme_candidates",
@@ -908,11 +979,14 @@ def execute_tool_call(name, arguments, allow_write_tools=False, chat_id=None):
         "get_rsi_metrics",
         "get_rsi_equity_curve",
         "get_strategy_comparison",
+        "get_portfolio_rl_metrics",
+        "get_portfolio_rl_equity_curve",
         "run_buy_hold_baseline",
         "run_ma_baseline",
         "run_rsi_baseline",
         "run_strategy_comparison",
         "run_portfolio_env_smoke_test",
+        "run_portfolio_cem_training",
         "screen_stock_candidates",
         "prepare_ticker_analysis",
         "analyze_theme_candidates",

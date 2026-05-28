@@ -16,7 +16,7 @@
 16. [x] 做统一回测指标整合
 17. [x] 做多资产 PortfolioEnv
 18. [ ] 训练 DQN / PPO
-19. [ ] 比较 RL 和传统策略
+19. [x] 比较 RL 和传统策略
 20. [ ] 完善 Streamlit Web 正式版
 21. [x] 加智能问答 / LLM 工具调用初版
 22. [x] 支持用户输入任意股票代码下载分析
@@ -61,4 +61,12 @@
 61. [x] 增加本地 Tool Promotion 流程，将审阅后的 proposal 合并为可部署工具
 62. [x] 增加本地 LLM 指令式工具合并入口，并支持当前本地运行环境刷新 generated 工具
 63. [x] 增加网页端 session-scoped 临时组合工具，允许安全复用既有工具配置
-64. [ ] 写 README、PPT 和最终 AI 使用说明
+64. [x] 理顺 active dataset / EDA figures 数据流，AI 与手动加载后无需手动 merge 即可查看
+65. [x] 从 Data Setup 普通操作中移除 Clear AI workspace，并将 merge 收进开发者入口
+66. [x] 增加轻量 Portfolio CEM 训练模块，并接入 tools、LLM 和 Streamlit
+67. [x] 将 Portfolio CEM 纳入统一策略对比表，区分单资产和组合层级结果
+68. [x] 增加项目能力说明工具，让 LLM 能清晰回答“你可以做什么”
+69. [x] 将 AI Assistant 调用改为后台任务，降低切换页面导致请求中断的概率
+70. [x] 完成项目体检：补 README、更新架构文档、检查入口/依赖/部署说明
+71. [x] 写最终报告和 AI Assistant 使用说明
+72. [x] 最终端到端验收测试

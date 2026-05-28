@@ -15,10 +15,13 @@ DEFAULT_METRICS_FILES = {
     "BuyHold": RESULTS_DIR / "buy_hold_metrics.csv",
     "MovingAverage": RESULTS_DIR / "ma_metrics.csv",
     "RSI": RESULTS_DIR / "rsi_metrics.csv",
+    "PortfolioCEM": RESULTS_DIR / "portfolio_rl_metrics.csv",
 }
 
 COMPARISON_COLUMNS = [
     "Ticker",
+    "Asset_Set",
+    "comparison_level",
     "Strategy",
     "start_date",
     "end_date",
@@ -62,6 +65,12 @@ def load_strategy_metric_files(metrics_files=None):
 
         if "Strategy" not in df.columns:
             df["Strategy"] = strategy_name
+        if "Ticker" not in df.columns:
+            df["Ticker"] = "Portfolio"
+        if "Asset_Set" not in df.columns:
+            df["Asset_Set"] = df["Tickers"] if "Tickers" in df.columns else df["Ticker"]
+        if "comparison_level" not in df.columns:
+            df["comparison_level"] = "portfolio" if strategy_name == "PortfolioCEM" else "single_asset"
         frames.append(df)
 
     if not frames:
