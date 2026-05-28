@@ -207,6 +207,8 @@ Detailed architecture:
   * Fixed processed-data reads for baseline strategy generation under runtime storage
   * Added more explicit per-ticker diagnostics when yfinance returns empty data or is rate-limited
   * Added a guard to `run_app.py` so it cannot recursively start extra Streamlit servers if accidentally selected as the Cloud entry file
+  * Added a Yahoo chart API fallback for online data loading when yfinance returns empty data under rate limits
+  * Changed proxy handling so Streamlit Cloud does not accidentally try to use the developer's local Clash proxy
 
 * [x] LLM natural-language analysis prototype
 

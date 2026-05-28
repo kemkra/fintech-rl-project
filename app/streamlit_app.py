@@ -588,7 +588,7 @@ def page_data_setup(df):
             use_proxy = st.checkbox(
                 "Use Clash proxy",
                 value=os.getenv("USE_PROXY", "false").lower() in {"1", "true", "yes"},
-                help="Only enable this when running locally with a working Clash proxy. Leave it off on Streamlit Community.",
+                help="Only works when the server running this app has CLASH_PROXY configured. Your local Clash cannot be used by Streamlit Community.",
             )
             data_source_label = st.selectbox(
                 "Data source",

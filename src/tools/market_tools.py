@@ -1766,6 +1766,8 @@ def refresh_market_data(
     RAW_DATA_DIR.mkdir(parents=True, exist_ok=True)
     if use_proxy:
         download_data.setup_proxy()
+    else:
+        download_data.clear_proxy()
 
     raw_frames = []
     source_rows = []
@@ -1800,7 +1802,7 @@ def refresh_market_data(
             file_path = RAW_DATA_DIR / f"{ticker}.csv"
             downloaded_df.to_csv(file_path, index=False)
             raw_frames.append(downloaded_df)
-            source_rows.append({"ticker": ticker, "source": "yfinance", "rows": int(len(downloaded_df))})
+            source_rows.append({"ticker": ticker, "source": downloaded_df.attrs.get("source", "online"), "rows": int(len(downloaded_df))})
         else:
             source_rows.append({"ticker": ticker, "source": "yfinance", "rows": 0, "error": download_error or "No data returned. yfinance may be rate-limited or the ticker/date range may be unavailable."})
 
@@ -1877,6 +1879,8 @@ def refresh_llm_workspace_data(
     paths["processed_dir"].mkdir(parents=True, exist_ok=True)
     if use_proxy:
         download_data.setup_proxy()
+    else:
+        download_data.clear_proxy()
 
     raw_frames = []
     source_rows = []
@@ -1909,7 +1913,7 @@ def refresh_llm_workspace_data(
         if not downloaded_df.empty:
             downloaded_df.to_csv(RAW_DATA_DIR / f"{ticker}.csv", index=False)
             raw_frames.append(downloaded_df)
-            source_rows.append({"ticker": ticker, "source": "yfinance_to_shared_raw", "rows": int(len(downloaded_df))})
+            source_rows.append({"ticker": ticker, "source": f"{downloaded_df.attrs.get('source', 'online')}_to_runtime_raw", "rows": int(len(downloaded_df))})
         else:
             source_rows.append({"ticker": ticker, "source": "yfinance_to_shared_raw", "rows": 0, "error": download_error or "No data returned. yfinance may be rate-limited or the ticker/date range may be unavailable."})
 
