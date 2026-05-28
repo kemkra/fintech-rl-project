@@ -1,0 +1,28 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# Local Streamlit / LLM preferences may contain API keys
+config/llm_preferences.json
+
+# Local chat history may contain private prompts or analysis
+config/llm_chats.json
+
+# Local UI state for which dataset is shown in app pages
+config/active_analysis_dataset.json
+
+# Legacy isolated AI analysis workspace
+data/llm_workspace/
+
+# Per-chat AI analysis workspaces contain temporary processed data/results
+data/workspaces/
+
+# Downloaded symbol-directory cache
+data/reference/us_stock_symbols.csv

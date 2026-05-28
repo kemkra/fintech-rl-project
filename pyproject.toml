@@ -1,0 +1,17 @@
+[project]
+name = "fintech-rl-project"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "matplotlib>=3.10.9",
+    "numpy>=2.4.6",
+    "pandas>=3.0.3",
+    "seaborn>=0.13.2",
+    "streamlit>=1.57.0",
+    "yfinance>=1.4.0",
+]
+
+[project.scripts]
+fintech-app = "run_app:main"

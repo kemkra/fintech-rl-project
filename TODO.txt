@@ -1,0 +1,50 @@
+1. [x] 下载数据
+2. [x] 清洗数据 / 特征工程
+3. [x] 做简单 RL 环境
+4. [x] 明确项目架构和 Web/UI 数据流
+5. [x] 参考课程 PDF 完善项目定位和系统架构
+6. [x] 建立 AI 使用记录模板
+7. [x] 审查并小幅加固已实现 Python 模块
+8. [x] 做 EDA 图表
+9. [x] 做 Streamlit Web Demo 骨架
+10. [x] 优化 Streamlit 为轻量按需渲染版本
+11. [x] 封装 LLM 可调用的 market tools
+12. [x] 做 Buy & Hold
+13. [x] 初步建立通用回测指标模块
+14. [x] 做 MA 策略
+15. [x] 做 RSI 策略
+16. [x] 做统一回测指标整合
+17. [ ] 做多资产 PortfolioEnv
+18. [ ] 训练 DQN / PPO
+19. [ ] 比较 RL 和传统策略
+20. [ ] 完善 Streamlit Web 正式版
+21. [x] 加智能问答 / LLM 工具调用初版
+22. [x] 支持用户输入任意股票代码下载分析
+23. [x] 增加本地免费 LLM 预设，并删除冗余 Offline Assistant
+24. [x] 扩展 LLM 工具：ticker 解析、图表生成、单股票刷新
+25. [x] 优化 LLM 调用、本地 raw 复用和调试日志
+26. [x] 合并阿里云百炼 / DashScope 配置入口，并支持按需拉取模型列表
+27. [x] 合并 AI Assistant 中的 Model / Available Models 控件
+28. [x] 将 LLM 工具调用轮数和请求超时时间改为可配置
+29. [x] 简化数据源选择为 Auto / Online，并将 LLM 限制改为显式开关
+30. [x] 增加本地 raw 数据库存工具，避免 AI 只汇报当前 processed 数据
+31. [x] 删除 AI Assistant 示例问题，并让数据刷新后自动更新 Buy & Hold baseline
+32. [x] 在 Data Setup 中显示当前 processed 数据和 raw 本地库存
+33. [x] 保存最近一次 LLM 回答，切换页面后仍可查看
+34. [x] 支持多个独立 AI Chat，并为每个 Chat 使用精简上下文
+35. [x] 增加本地 LLM 配置记忆，支持可选保存 API Key
+36. [x] 合并数据下载 ticker 选择器，支持搜索和手动新增
+37. [x] 优化 AI Chat 列表布局，并支持重命名会话
+38. [x] 持久化保存 AI Chat 历史，并将新会话默认命名为编号
+39. [x] 扩充常用股票候选池并优化模型加载按钮布局
+40. [x] 将 AI 自动下载数据隔离到 LLM workspace
+41. [x] 在 Data Setup 增加 AI workspace 状态、清空和合并到主项目功能
+42. [x] 修复 workspace 股票无法运行 baseline 策略的问题
+43. [x] 接入 RSI baseline 到 tools、LLM 和 Streamlit
+44. [x] 生成统一策略对比表，并接入 tools、LLM 和 Streamlit
+45. [x] 增加 LLM 将 AI workspace 数据 push 到其他页面查看的功能
+46. [x] 删除 merged_stock_data 依赖，改为直接从单个 raw CSV 生成 processed
+47. [x] 数据加载界面接入可搜索的美股代码目录，并将下载文案改为加载
+48. [x] 重构 AI workspace：raw 共用，processed/results 按 Chat 隔离
+49. [x] 增加 LLM 股票候选筛选工具和 shortlist 加载工具
+50. [ ] 写 README、PPT 和最终 AI 使用说明
