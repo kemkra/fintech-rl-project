@@ -1,10 +1,14 @@
 from datetime import datetime
+from email.utils import parsedate_to_datetime
+import html
 import json
 import os
 from pathlib import Path
 import shutil
 from types import SimpleNamespace
+import zipfile
 from urllib.request import Request, urlopen
+from xml.etree import ElementTree
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -46,6 +50,8 @@ PORTFOLIO_RL_EQUITY_FILE = Path("reports/results/portfolio_rl_equity_curve.csv")
 PORTFOLIO_RL_METRICS_FILE = Path("reports/results/portfolio_rl_metrics.csv")
 PORTFOLIO_RL_MODEL_FILE = Path("models/portfolio_cem_policy.npz")
 FIGURES_DIR = Path("reports/figures")
+RESEARCH_DIR = Path("reports/research")
+EXPORTS_DIR = Path("reports/exports")
 TOOL_PROPOSALS_DIR = Path("reports/tool_proposals")
 TEMP_COMPOSITE_TOOLS_FILE = Path("config/temp_composite_tools.json")
 DEFAULT_TICKERS = ["AAPL", "MSFT", "GOOGL", "AMZN", "TSLA", "JPM", "BAC", "GS", "SPY", "QQQ"]
@@ -112,6 +118,19 @@ def get_project_capabilities():
                 ],
             },
             {
+                "area": "Fundamental and market research",
+                "can_do": [
+                    "Fetch compact company fundamental snapshots from yfinance.",
+                    "Collect recent Yahoo Finance RSS headlines and source URLs.",
+                    "Summarize broad market context with major ETFs and indexes such as SPY, QQQ, IWM, TLT, GLD, UUP, USO, and VIX.",
+                    "Save research outputs as Markdown and JSON reports for export.",
+                ],
+                "example_questions": [
+                    "Research Apple fundamentals and recent market news.",
+                    "Give me macro context for semiconductor stocks.",
+                ],
+            },
+            {
                 "area": "Portfolio RL research",
                 "can_do": [
                     "Run a multi-asset PortfolioEnv with cash plus asset allocation actions.",
@@ -131,6 +150,8 @@ def get_project_capabilities():
                     "Screen a theme such as semiconductor, AI, banks, or renewable energy using available candidate pools.",
                     "Push AI-generated analysis data and charts to the app pages for inspection.",
                     "Save debug logs and expose tool calls for troubleshooting.",
+                    "Export generated datasets, figures, strategy results, and policy files as ZIP packages.",
+                    "Use extraction codes to export one specific chart, dataset, strategy table, or model artifact.",
                 ],
                 "example_questions": [
                     "帮我挖掘几支芯片科技相关股票，并比较它们。",
@@ -154,7 +175,7 @@ def get_project_capabilities():
             "This is a research/education tool, not investment advice.",
             "Cloud deployments cannot use a user's local Clash proxy; online data depends on public Yahoo/yfinance access.",
             "The current RL training is a lightweight Portfolio CEM scaffold, not a full PPO/DQN deep RL agent yet.",
-            "Theme screening uses available symbol candidates and historical market data; it is not a complete fundamental research platform.",
+            "Fundamental/news research uses public yfinance/Yahoo Finance sources and may be delayed, incomplete, or unavailable under rate limits.",
         ],
         "recommended_response_style": [
             "Start with a concise overview.",
@@ -172,7 +193,7 @@ def configure_runtime_storage(session_id=None, root=None):
     global EDA_SUMMARY_FILE, DATA_QUALITY_FILE, BUY_HOLD_EQUITY_FILE, BUY_HOLD_METRICS_FILE
     global MA_EQUITY_FILE, MA_METRICS_FILE, RSI_EQUITY_FILE, RSI_METRICS_FILE
     global STRATEGY_COMPARISON_FILE, PORTFOLIO_RL_EQUITY_FILE, PORTFOLIO_RL_METRICS_FILE, PORTFOLIO_RL_MODEL_FILE
-    global FIGURES_DIR, TOOL_PROPOSALS_DIR, TEMP_COMPOSITE_TOOLS_FILE, RUNTIME_SESSION_ID, RUNTIME_DB_FILE
+    global FIGURES_DIR, RESEARCH_DIR, EXPORTS_DIR, TOOL_PROPOSALS_DIR, TEMP_COMPOSITE_TOOLS_FILE, RUNTIME_SESSION_ID, RUNTIME_DB_FILE
 
     paths = runtime_store.ensure_runtime(session_id=session_id, root=root)
     CONFIG_DIR = paths["config_dir"]
@@ -196,6 +217,8 @@ def configure_runtime_storage(session_id=None, root=None):
     PORTFOLIO_RL_METRICS_FILE = paths["results_dir"] / "portfolio_rl_metrics.csv"
     PORTFOLIO_RL_MODEL_FILE = paths["session_dir"] / "models" / "portfolio_cem_policy.npz"
     FIGURES_DIR = paths["figures_dir"]
+    RESEARCH_DIR = paths["research_dir"]
+    EXPORTS_DIR = paths["exports_dir"]
     TOOL_PROPOSALS_DIR = paths["tool_proposals_dir"]
     TEMP_COMPOSITE_TOOLS_FILE = paths["temp_tools_file"]
     RUNTIME_SESSION_ID = paths["session_id"]
@@ -215,6 +238,8 @@ def get_runtime_storage_status():
     status["raw_dir"] = str(RAW_DATA_DIR)
     status["processed_file"] = str(PROCESSED_DATA_FILE)
     status["chat_workspaces_dir"] = str(CHAT_WORKSPACES_DIR)
+    status["research_dir"] = str(RESEARCH_DIR)
+    status["exports_dir"] = str(EXPORTS_DIR)
     return status
 
 
@@ -278,6 +303,8 @@ def get_chat_workspace_paths(chat_id=None):
         "portfolio_rl_equity_file": results_dir / "portfolio_rl_equity_curve.csv",
         "portfolio_rl_metrics_file": results_dir / "portfolio_rl_metrics.csv",
         "portfolio_rl_model_file": workspace_dir / "models" / "portfolio_cem_policy.npz",
+        "research_dir": workspace_dir / "research",
+        "exports_dir": workspace_dir / "exports",
     }
 
 
@@ -1660,6 +1687,7 @@ def get_active_artifact_paths():
             "processed_file": paths["processed_file"],
             "figures_dir": paths["figures_dir"],
             "results_dir": paths["results_dir"],
+            "research_dir": paths["research_dir"],
             "eda_summary_file": paths["results_dir"] / "eda_summary.csv",
             "data_quality_file": paths["results_dir"] / "data_quality_summary.csv",
         }
@@ -1669,6 +1697,7 @@ def get_active_artifact_paths():
         "processed_file": PROCESSED_DATA_FILE,
         "figures_dir": FIGURES_DIR,
         "results_dir": EDA_SUMMARY_FILE.parent,
+        "research_dir": RESEARCH_DIR,
         "eda_summary_file": EDA_SUMMARY_FILE,
         "data_quality_file": DATA_QUALITY_FILE,
     }
@@ -1895,6 +1924,628 @@ def list_available_figures(data_scope="active", chat_id=None):
         "figures": [path.name for path in sorted(figures_dir.glob("*.png"))],
         "directory": str(figures_dir),
     }
+
+
+FUNDAMENTAL_FIELDS = [
+    "longName",
+    "sector",
+    "industry",
+    "country",
+    "currency",
+    "marketCap",
+    "enterpriseValue",
+    "trailingPE",
+    "forwardPE",
+    "priceToBook",
+    "pegRatio",
+    "dividendYield",
+    "profitMargins",
+    "operatingMargins",
+    "returnOnEquity",
+    "returnOnAssets",
+    "revenueGrowth",
+    "earningsGrowth",
+    "debtToEquity",
+    "currentRatio",
+    "beta",
+    "fiftyTwoWeekHigh",
+    "fiftyTwoWeekLow",
+    "averageVolume",
+    "recommendationKey",
+    "targetMeanPrice",
+]
+
+MACRO_TICKERS = {
+    "SPY": "S&P 500 ETF",
+    "QQQ": "Nasdaq 100 ETF",
+    "DIA": "Dow Jones ETF",
+    "IWM": "Russell 2000 ETF",
+    "TLT": "Long Treasury ETF",
+    "GLD": "Gold ETF",
+    "USO": "Oil ETF",
+    "UUP": "US Dollar ETF",
+    "^VIX": "CBOE Volatility Index",
+}
+
+
+def _format_research_value(value):
+    if value is None or value == "":
+        return "N/A"
+    if isinstance(value, (np.integer, int)):
+        return f"{int(value):,}"
+    if isinstance(value, (np.floating, float)):
+        if abs(float(value)) >= 1_000_000:
+            return f"{float(value):,.0f}"
+        return f"{float(value):.4g}"
+    return str(value)
+
+
+def _safe_research_slug(text):
+    safe = "".join(char.lower() if char.isalnum() else "_" for char in str(text))
+    while "__" in safe:
+        safe = safe.replace("__", "_")
+    return safe.strip("_")[:80] or "research"
+
+
+def _research_output_dir(data_scope="active", chat_id=None):
+    data_scope = str(data_scope or "active").lower()
+    if data_scope in {"workspace", "chat_workspace", "llm_workspace"}:
+        return get_chat_workspace_paths(chat_id)["research_dir"]
+    if data_scope == "active":
+        paths = get_active_artifact_paths()
+        if paths["source"] == "chat_workspace":
+            return get_chat_workspace_paths(paths.get("chat_id"))["research_dir"]
+    return RESEARCH_DIR
+
+
+def _get_ticker_info(ticker):
+    ticker = normalize_ticker(ticker)
+    try:
+        info = yf.Ticker(ticker).get_info()
+    except Exception as exc:
+        return {}, str(exc)
+    return info or {}, None
+
+
+def get_fundamental_snapshot(tickers):
+    """Fetch a compact yfinance fundamental snapshot for one or more tickers."""
+    records = []
+    errors = []
+    for ticker in merge_ticker_lists(tickers):
+        info, error = _get_ticker_info(ticker)
+        if error:
+            errors.append({"ticker": ticker, "error": error})
+            records.append({"Ticker": ticker, "available": False, "error": error})
+            continue
+        record = {"Ticker": ticker, "available": bool(info)}
+        for field in FUNDAMENTAL_FIELDS:
+            record[field] = info.get(field)
+        records.append(record)
+    return {
+        "available": any(record.get("available") for record in records),
+        "records": records,
+        "errors": errors,
+        "source": "yfinance.get_info",
+        "retrieved_at": datetime.now().isoformat(timespec="seconds"),
+    }
+
+
+def _period_return(history, trading_days):
+    if history.empty or len(history) < 2:
+        return None
+    close = history["Close"].dropna()
+    if len(close) < 2:
+        return None
+    start = close.iloc[max(0, len(close) - trading_days)]
+    end = close.iloc[-1]
+    if start == 0:
+        return None
+    return float(end / start - 1)
+
+
+def get_macro_market_snapshot(period="6mo"):
+    """Summarize broad market ETF/index performance for macro context."""
+    records = []
+    for ticker, label in MACRO_TICKERS.items():
+        try:
+            history = yf.Ticker(ticker).history(period=period, interval="1d", auto_adjust=True)
+        except Exception as exc:
+            records.append({"Ticker": ticker, "Name": label, "available": False, "error": str(exc)})
+            continue
+        if history.empty or "Close" not in history.columns:
+            records.append({"Ticker": ticker, "Name": label, "available": False, "error": "No history returned."})
+            continue
+        close = history["Close"].dropna()
+        daily_return = close.pct_change().dropna()
+        records.append(
+            {
+                "Ticker": ticker,
+                "Name": label,
+                "available": True,
+                "last_close": float(close.iloc[-1]),
+                "return_1m": _period_return(history, 21),
+                "return_3m": _period_return(history, 63),
+                "return_period": float(close.iloc[-1] / close.iloc[0] - 1) if close.iloc[0] else None,
+                "volatility_annualized": float(daily_return.std() * np.sqrt(252)) if not daily_return.empty else None,
+                "start_date": str(history.index.min().date()),
+                "end_date": str(history.index.max().date()),
+            }
+        )
+    return {
+        "available": any(record.get("available") for record in records),
+        "period": period,
+        "records": records,
+        "source": "yfinance.history",
+        "retrieved_at": datetime.now().isoformat(timespec="seconds"),
+    }
+
+
+def _fetch_yahoo_rss_news(ticker, limit=5):
+    url = f"https://feeds.finance.yahoo.com/rss/2.0/headline?s={ticker}&region=US&lang=en-US"
+    request = Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    try:
+        with urlopen(request, timeout=12) as response:
+            payload = response.read()
+    except Exception as exc:
+        return [], str(exc)
+
+    try:
+        root = ElementTree.fromstring(payload)
+    except Exception as exc:
+        return [], str(exc)
+
+    records = []
+    for item in root.findall(".//item")[: int(limit)]:
+        title = html.unescape((item.findtext("title") or "").strip())
+        link = (item.findtext("link") or "").strip()
+        publisher = html.unescape((item.findtext("source") or "").strip())
+        published = item.findtext("pubDate")
+        if published:
+            try:
+                published = parsedate_to_datetime(published).isoformat()
+            except Exception:
+                published = published.strip()
+        summary = html.unescape((item.findtext("description") or "").strip())
+        records.append(
+            {
+                "ticker": ticker,
+                "title": title,
+                "publisher": publisher or "Yahoo Finance RSS",
+                "published": published,
+                "url": link,
+                "summary": summary[:500],
+            }
+        )
+    return records, None
+
+
+def get_market_news(tickers=None, limit_per_ticker=5):
+    """Fetch recent Yahoo Finance RSS headlines for the selected tickers."""
+    tickers = merge_ticker_lists(tickers or DEFAULT_TICKERS[:3])
+    records = []
+    errors = []
+    for ticker in tickers:
+        news, error = _fetch_yahoo_rss_news(ticker, limit=limit_per_ticker)
+        records.extend(news)
+        if error:
+            errors.append({"ticker": ticker, "error": error})
+    return {
+        "available": bool(records),
+        "tickers": tickers,
+        "records": records,
+        "errors": errors,
+        "source": "Yahoo Finance RSS",
+        "retrieved_at": datetime.now().isoformat(timespec="seconds"),
+    }
+
+
+def _summarize_fundamental_record(record):
+    if not record.get("available"):
+        return f"- {record.get('Ticker')}: unavailable ({record.get('error', 'no data')})"
+    fields = [
+        ("Name", record.get("longName")),
+        ("Sector", record.get("sector")),
+        ("Industry", record.get("industry")),
+        ("Market Cap", _format_research_value(record.get("marketCap"))),
+        ("Trailing PE", _format_research_value(record.get("trailingPE"))),
+        ("Forward PE", _format_research_value(record.get("forwardPE"))),
+        ("Revenue Growth", _format_research_value(record.get("revenueGrowth"))),
+        ("Profit Margin", _format_research_value(record.get("profitMargins"))),
+        ("ROE", _format_research_value(record.get("returnOnEquity"))),
+        ("Debt/Equity", _format_research_value(record.get("debtToEquity"))),
+        ("Recommendation", record.get("recommendationKey")),
+    ]
+    detail = "; ".join(f"{label}: {value}" for label, value in fields if value not in {None, "N/A", ""})
+    return f"- {record.get('Ticker')}: {detail}"
+
+
+def _write_research_report(payload, output_dir, query):
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    slug = _safe_research_slug(query or "_".join(payload.get("tickers", [])))
+    base = f"research_{slug}_{timestamp}"
+    json_file = output_dir / f"{base}.json"
+    md_file = output_dir / f"{base}.md"
+
+    with json_file.open("w", encoding="utf-8") as file:
+        json.dump(payload, file, ensure_ascii=False, indent=2, default=str)
+
+    lines = [
+        f"# Web Research Report: {query or ', '.join(payload.get('tickers', []))}",
+        "",
+        f"Generated at: {payload['retrieved_at']}",
+        "",
+        "Educational research output only. This is not investment advice.",
+        "",
+        "## Fundamental Snapshot",
+    ]
+    for record in payload.get("fundamentals", {}).get("records", []):
+        lines.append(_summarize_fundamental_record(record))
+
+    lines.extend(["", "## Macro Market Snapshot"])
+    for record in payload.get("macro", {}).get("records", []):
+        if not record.get("available"):
+            lines.append(f"- {record.get('Ticker')} ({record.get('Name')}): unavailable")
+            continue
+        lines.append(
+            "- "
+            f"{record['Ticker']} ({record['Name']}): "
+            f"period return {_format_research_value(record.get('return_period'))}, "
+            f"1m {_format_research_value(record.get('return_1m'))}, "
+            f"3m {_format_research_value(record.get('return_3m'))}, "
+            f"annualized volatility {_format_research_value(record.get('volatility_annualized'))}"
+        )
+
+    lines.extend(["", "## Recent News Sources"])
+    for item in payload.get("news", {}).get("records", []):
+        title = item.get("title") or "Untitled"
+        publisher = item.get("publisher") or "Unknown source"
+        published = item.get("published") or "Unknown date"
+        url = item.get("url") or ""
+        lines.append(f"- [{item.get('ticker')}] {title} | {publisher} | {published} | {url}")
+
+    lines.extend(["", "## Research Notes"])
+    lines.extend(payload.get("research_notes", []))
+    md_file.write_text("\n".join(lines), encoding="utf-8")
+    return json_file, md_file
+
+
+def run_web_research_agent(
+    query,
+    tickers=None,
+    include_fundamentals=True,
+    include_macro=True,
+    include_news=True,
+    news_limit=5,
+    macro_period="6mo",
+    data_scope="active",
+    chat_id=None,
+):
+    """Run a lightweight Web research agent over fundamentals, macro context, and recent news."""
+    requested_tickers = merge_ticker_lists(tickers)
+    if not requested_tickers:
+        candidates = search_us_symbols(query=query, limit=5).get("records", [])
+        requested_tickers = merge_ticker_lists([row.get("yfinance_symbol") for row in candidates])
+    if not requested_tickers:
+        requested_tickers = DEFAULT_TICKERS[:3]
+
+    fundamentals = get_fundamental_snapshot(requested_tickers) if include_fundamentals else {"available": False, "records": []}
+    macro = get_macro_market_snapshot(period=macro_period) if include_macro else {"available": False, "records": []}
+    news = get_market_news(requested_tickers, limit_per_ticker=news_limit) if include_news else {"available": False, "records": []}
+
+    notes = [
+        "Combine this research layer with the app's price, feature, strategy, and RL outputs before drawing conclusions.",
+        "Fundamental fields come from yfinance and may be delayed, missing, or vendor-normalized.",
+        "News headlines are source links for context; users should open the original articles for full details.",
+    ]
+    payload = {
+        "available": True,
+        "query": query,
+        "tickers": requested_tickers,
+        "retrieved_at": datetime.now().isoformat(timespec="seconds"),
+        "fundamentals": fundamentals,
+        "macro": macro,
+        "news": news,
+        "research_notes": notes,
+        "sources": [
+            {"name": "yfinance quote/fundamental data", "url": "https://pypi.org/project/yfinance/"},
+            {"name": "Yahoo Finance RSS headlines", "url": "https://finance.yahoo.com/"},
+        ],
+    }
+    output_dir = _research_output_dir(data_scope=data_scope, chat_id=chat_id)
+    json_file, md_file = _write_research_report(payload, output_dir=output_dir, query=query)
+    payload["json_file"] = str(json_file)
+    payload["markdown_file"] = str(md_file)
+    payload["message"] = "Web research report created with fundamentals, macro context, and recent news sources."
+    return payload
+
+
+def _resolve_export_context(data_scope="active", chat_id=None):
+    data_scope = str(data_scope or "active").lower()
+    if data_scope == "active":
+        paths = get_active_artifact_paths()
+        source = paths["source"]
+        chat_id = paths.get("chat_id")
+    elif data_scope in {"workspace", "chat_workspace", "llm_workspace"}:
+        workspace_paths = get_chat_workspace_paths(chat_id)
+        paths = {
+            "source": "chat_workspace",
+            "chat_id": workspace_paths["chat_id"],
+            "processed_file": workspace_paths["processed_file"],
+            "figures_dir": workspace_paths["figures_dir"],
+            "results_dir": workspace_paths["results_dir"],
+            "research_dir": workspace_paths["research_dir"],
+        }
+        source = "chat_workspace"
+        chat_id = workspace_paths["chat_id"]
+    elif data_scope == "project":
+        paths = {
+            "source": "project",
+            "chat_id": None,
+            "processed_file": PROCESSED_DATA_FILE,
+            "figures_dir": FIGURES_DIR,
+            "results_dir": EDA_SUMMARY_FILE.parent,
+            "research_dir": RESEARCH_DIR,
+        }
+        source = "project"
+        chat_id = None
+    else:
+        raise ValueError("data_scope must be one of: active, project, workspace.")
+
+    if source == "chat_workspace":
+        workspace_paths = get_chat_workspace_paths(chat_id)
+        paths["model_file"] = workspace_paths["portfolio_rl_model_file"]
+        paths["exports_dir"] = workspace_paths["exports_dir"]
+    else:
+        paths["model_file"] = PORTFOLIO_RL_MODEL_FILE
+        paths["exports_dir"] = EXPORTS_DIR
+    return paths
+
+
+def _safe_export_name(name):
+    text = str(name or "").strip()
+    if text.lower().endswith(".zip"):
+        text = text[:-4]
+    if not text:
+        text = f"finrl_insight_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    safe = "".join(char if char.isalnum() or char in {"-", "_"} else "_" for char in text)
+    return safe.strip("_") or f"finrl_insight_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+
+
+def _file_record(path, category, archive_name=None):
+    path = Path(path)
+    if not path.exists() or not path.is_file():
+        return None
+    archive_name = archive_name or f"{category}/{path.name}"
+    return {
+        "path": str(path),
+        "name": path.name,
+        "category": category,
+        "archive_name": archive_name,
+        "size_bytes": int(path.stat().st_size),
+    }
+
+
+def _artifact_code(record):
+    text = f"{record['category']}_{Path(record['archive_name']).stem}"
+    code = "".join(char.upper() if char.isalnum() else "_" for char in text)
+    while "__" in code:
+        code = code.replace("__", "_")
+    return code.strip("_")
+
+
+def _attach_artifact_codes(records):
+    seen = {}
+    coded_records = []
+    for record in records:
+        output = dict(record)
+        base_code = _artifact_code(output)
+        count = seen.get(base_code, 0) + 1
+        seen[base_code] = count
+        output["artifact_code"] = base_code if count == 1 else f"{base_code}_{count}"
+        coded_records.append(output)
+    return coded_records
+
+
+def _filter_artifact_records(records, artifact_codes=None, category=None, query=None):
+    filtered = list(records)
+    if category:
+        category_text = str(category).strip().lower()
+        filtered = [record for record in filtered if record["category"].lower() == category_text]
+    if query:
+        query_text = str(query).strip().lower()
+        filtered = [
+            record for record in filtered
+            if query_text in " ".join(
+                [
+                    record.get("artifact_code", ""),
+                    record.get("category", ""),
+                    record.get("name", ""),
+                    record.get("archive_name", ""),
+                ]
+            ).lower()
+        ]
+    if artifact_codes:
+        requested = {str(code).strip().upper() for code in artifact_codes if str(code).strip()}
+        filtered = [record for record in filtered if record.get("artifact_code", "").upper() in requested]
+    return filtered
+
+
+def _export_raw_records_for_processed_tickers(processed_file):
+    records = []
+    processed = _read_csv(processed_file)
+    if processed.empty or "Ticker" not in processed.columns:
+        return records
+    for ticker in sorted(processed["Ticker"].dropna().astype(str).unique()):
+        record = _file_record(RAW_DATA_DIR / f"{ticker}.csv", "raw_data", f"raw_data/{ticker}.csv")
+        if record:
+            records.append(record)
+    return records
+
+
+def list_exportable_artifacts(
+    data_scope="active",
+    chat_id=None,
+    include_data=True,
+    include_raw_data=False,
+    include_figures=True,
+    include_strategy_results=True,
+    include_models=True,
+    include_research=True,
+    category=None,
+    query=None,
+):
+    """List generated files that can be exported for the selected analysis scope."""
+    paths = _resolve_export_context(data_scope=data_scope, chat_id=chat_id)
+    records = []
+
+    if include_data:
+        processed_record = _file_record(paths["processed_file"], "data", "data/stock_features.csv")
+        if processed_record:
+            records.append(processed_record)
+        if include_raw_data:
+            records.extend(_export_raw_records_for_processed_tickers(paths["processed_file"]))
+
+    if include_figures:
+        figures_dir = Path(paths["figures_dir"])
+        for figure_path in sorted(figures_dir.glob("*")):
+            if figure_path.suffix.lower() in {".png", ".jpg", ".jpeg", ".webp", ".svg"}:
+                record = _file_record(figure_path, "figures", f"figures/{figure_path.name}")
+                if record:
+                    records.append(record)
+
+    if include_strategy_results:
+        results_dir = Path(paths["results_dir"])
+        for result_path in sorted(results_dir.glob("*.csv")):
+            record = _file_record(result_path, "results", f"results/{result_path.name}")
+            if record:
+                records.append(record)
+
+    if include_models:
+        model_record = _file_record(paths["model_file"], "models", f"models/{Path(paths['model_file']).name}")
+        if model_record:
+            records.append(model_record)
+
+    if include_research:
+        research_dir = Path(paths["research_dir"])
+        for research_path in sorted(research_dir.glob("*")):
+            if research_path.suffix.lower() in {".json", ".md", ".txt"}:
+                record = _file_record(research_path, "research", f"research/{research_path.name}")
+                if record:
+                    records.append(record)
+
+    records = _filter_artifact_records(_attach_artifact_codes(records), category=category, query=query)
+    return {
+        "available": bool(records),
+        "data_scope": paths["source"],
+        "chat_id": paths.get("chat_id"),
+        "records": records,
+        "file_count": len(records),
+        "total_size_bytes": int(sum(record["size_bytes"] for record in records)),
+        "message": "Exportable artifacts found." if records else "No generated artifacts are available for this scope yet.",
+    }
+
+
+def export_analysis_artifacts(
+    data_scope="active",
+    chat_id=None,
+    export_name=None,
+    include_data=True,
+    include_raw_data=False,
+    include_figures=True,
+    include_strategy_results=True,
+    include_models=True,
+    include_research=True,
+    artifact_codes=None,
+    category=None,
+    query=None,
+):
+    """Write selected generated artifacts to a ZIP file and return the export path."""
+    paths = _resolve_export_context(data_scope=data_scope, chat_id=chat_id)
+    inventory = list_exportable_artifacts(
+        data_scope=data_scope,
+        chat_id=chat_id,
+        include_data=include_data,
+        include_raw_data=include_raw_data,
+        include_figures=include_figures,
+        include_strategy_results=include_strategy_results,
+        include_models=include_models,
+        include_research=include_research,
+        category=category,
+        query=query,
+    )
+    if artifact_codes:
+        inventory["records"] = _filter_artifact_records(inventory["records"], artifact_codes=artifact_codes)
+        inventory["available"] = bool(inventory["records"])
+        inventory["file_count"] = len(inventory["records"])
+        inventory["total_size_bytes"] = int(sum(record["size_bytes"] for record in inventory["records"]))
+        inventory["message"] = (
+            "Selected exportable artifacts found."
+            if inventory["records"]
+            else "No exportable artifacts matched the requested extraction codes."
+        )
+    if not inventory["records"]:
+        return {
+            "exported": False,
+            "message": inventory["message"],
+            "inventory": inventory,
+        }
+
+    export_dir = Path(paths["exports_dir"])
+    export_dir.mkdir(parents=True, exist_ok=True)
+    export_file = export_dir / f"{_safe_export_name(export_name)}.zip"
+    if export_file.exists():
+        export_file = export_dir / f"{export_file.stem}_{datetime.now().strftime('%H%M%S')}.zip"
+
+    metadata = {
+        "project": "FinRL Insight",
+        "created_at": datetime.now().isoformat(timespec="seconds"),
+        "data_scope": inventory["data_scope"],
+        "chat_id": inventory.get("chat_id"),
+        "include_data": include_data,
+        "include_raw_data": include_raw_data,
+        "include_figures": include_figures,
+        "include_strategy_results": include_strategy_results,
+        "include_models": include_models,
+        "include_research": include_research,
+        "artifact_codes": artifact_codes or [],
+        "category": category,
+        "query": query,
+        "files": inventory["records"],
+    }
+
+    with zipfile.ZipFile(export_file, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("metadata.json", json.dumps(metadata, ensure_ascii=False, indent=2))
+        for record in inventory["records"]:
+            archive.write(record["path"], arcname=record["archive_name"])
+
+    return {
+        "exported": True,
+        "export_file": str(export_file),
+        "file_count": inventory["file_count"],
+        "total_size_bytes": inventory["total_size_bytes"],
+        "data_scope": inventory["data_scope"],
+        "chat_id": inventory.get("chat_id"),
+        "records": inventory["records"],
+        "message": "Export package created.",
+    }
+
+
+def export_selected_artifacts(artifact_codes, data_scope="active", chat_id=None, export_name=None):
+    """Create a ZIP export using exact artifact extraction codes from list_exportable_artifacts."""
+    return export_analysis_artifacts(
+        data_scope=data_scope,
+        chat_id=chat_id,
+        export_name=export_name,
+        artifact_codes=artifact_codes,
+        include_data=True,
+        include_raw_data=True,
+        include_figures=True,
+        include_strategy_results=True,
+        include_models=True,
+        include_research=True,
+    )
 
 
 def _configure_eda_module(eda_module):

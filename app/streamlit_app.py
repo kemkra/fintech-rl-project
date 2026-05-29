@@ -9,7 +9,6 @@ from uuid import uuid4
 
 import pandas as pd
 import streamlit as st
-import streamlit.components.v1 as components
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -32,6 +31,13 @@ LLM_PREFERENCES_FILE = CONFIG_DIR / "llm_preferences.json"
 LLM_CHATS_FILE = CONFIG_DIR / "llm_chats.json"
 LLM_JOBS_DIR = CONFIG_DIR / "llm_jobs"
 WEB_RUNTIME_ROOT = PROJECT_ROOT / ".streamlit_runtime"
+STREAMLIT_CLOUD_ENV_KEYS = [
+    "STREAMLIT_CLOUD",
+    "STREAMLIT_COMMUNITY_CLOUD",
+    "STREAMLIT_SHARING",
+    "STREAMLIT_CLOUD_APP_NAME",
+    "STREAMLIT_CLOUD_APP_URL",
+]
 POPULAR_TICKERS = [
     "AAPL",
     "ABBV",
@@ -118,12 +124,48 @@ POPULAR_TICKERS = [
 ]
 
 
-def init_web_runtime_storage():
+def should_use_session_runtime_storage():
+    mode = os.getenv("FINTECH_STORAGE_MODE", "auto").strip().lower()
+    if mode in {"local", "project", "persistent"}:
+        return False
+    if mode in {"session", "runtime", "web", "cloud"}:
+        return True
+    try:
+        secret_mode = str(st.secrets.get("FINTECH_STORAGE_MODE", "")).strip().lower()
+    except Exception:
+        secret_mode = ""
+    if secret_mode in {"local", "project", "persistent"}:
+        return False
+    if secret_mode in {"session", "runtime", "web", "cloud"}:
+        return True
+    project_parts = PROJECT_ROOT.resolve().parts
+    if len(project_parts) >= 3 and project_parts[1:3] == ("mount", "src"):
+        return True
+    if os.getenv("HOME") == "/home/adminuser":
+        return True
+    return any(os.getenv(key) for key in STREAMLIT_CLOUD_ENV_KEYS)
+
+
+def init_app_storage():
     global CONFIG_DIR, LLM_PREFERENCES_FILE, LLM_CHATS_FILE, LLM_JOBS_DIR
 
-    if "web_session_id" not in st.session_state:
+    if not should_use_session_runtime_storage():
+        st.session_state["storage_mode"] = "local"
+        st.session_state.setdefault("web_session_id", None)
+        st.session_state["runtime_paths"] = None
+        CONFIG_DIR = PROJECT_ROOT / "config"
+        LLM_PREFERENCES_FILE = CONFIG_DIR / "llm_preferences.json"
+        LLM_CHATS_FILE = CONFIG_DIR / "llm_chats.json"
+        LLM_JOBS_DIR = CONFIG_DIR / "llm_jobs"
+        return {
+            "storage_mode": "local",
+            "message": "Using persistent project folders: data/, reports/, models/, and config/.",
+        }
+
+    if "web_session_id" not in st.session_state or not st.session_state["web_session_id"]:
         st.session_state["web_session_id"] = uuid4().hex[:12]
 
+    st.session_state["storage_mode"] = "session"
     runtime_root = Path(os.getenv("FINTECH_RUNTIME_ROOT", WEB_RUNTIME_ROOT))
     paths = market_tools.configure_runtime_storage(
         session_id=st.session_state["web_session_id"],
@@ -134,10 +176,11 @@ def init_web_runtime_storage():
     LLM_CHATS_FILE = CONFIG_DIR / "llm_chats.json"
     LLM_JOBS_DIR = CONFIG_DIR / "llm_jobs"
     st.session_state["runtime_paths"] = paths
+    paths["storage_mode"] = "session"
     return paths
 
 
-init_web_runtime_storage()
+init_app_storage()
 
 
 @st.cache_data(show_spinner=False)
@@ -353,7 +396,7 @@ def write_llm_job_status(job_file, status, **fields):
     return payload
 
 
-def run_llm_job_in_background(job_file, runtime_session_id, runtime_root, chat_id, question, llm_kwargs):
+def run_llm_job_in_background(job_file, storage_mode, runtime_session_id, runtime_root, chat_id, question, llm_kwargs):
     write_llm_job_status(
         job_file,
         "running",
@@ -362,7 +405,8 @@ def run_llm_job_in_background(job_file, runtime_session_id, runtime_root, chat_i
         started_at=datetime.now().isoformat(timespec="seconds"),
     )
     try:
-        market_tools.configure_runtime_storage(session_id=runtime_session_id, root=runtime_root)
+        if storage_mode == "session":
+            market_tools.configure_runtime_storage(session_id=runtime_session_id, root=runtime_root)
         result = run_llm_tool_chat(question=question, chat_id=chat_id, **llm_kwargs)
     except Exception as exc:
         write_llm_job_status(
@@ -403,7 +447,8 @@ def start_llm_background_job(chat, question, llm_kwargs):
         target=run_llm_job_in_background,
         kwargs={
             "job_file": str(job_file),
-            "runtime_session_id": st.session_state["web_session_id"],
+            "storage_mode": st.session_state.get("storage_mode", "local"),
+            "runtime_session_id": st.session_state.get("web_session_id"),
             "runtime_root": str(Path(os.getenv("FINTECH_RUNTIME_ROOT", WEB_RUNTIME_ROOT))),
             "chat_id": chat["id"],
             "question": question,
@@ -449,6 +494,24 @@ def reconcile_llm_job(chat):
         chat.pop("pending_job", None)
         save_llm_chats_to_disk()
     return job_status
+
+
+@st.fragment(run_every="3s")
+def render_llm_pending_job_status(chat_id):
+    chat = st.session_state.get("llm_chats", {}).get(chat_id)
+    if not chat or not chat.get("pending_job"):
+        return
+
+    job_status = reconcile_llm_job(chat) or {"status": "queued"}
+    status = job_status.get("status", "queued")
+    if status in {"completed", "failed"}:
+        st.rerun(scope="app")
+
+    st.info(
+        "LLM job is running in the background. "
+        f"Status: {status}. "
+        "You can switch pages and come back later."
+    )
 
 
 def load_llm_chats_from_disk():
@@ -649,9 +712,11 @@ def show_current_data_snapshot():
     with st.expander("Current data snapshot", expanded=True):
         if runtime_status.get("enabled"):
             st.caption(
-                "Web runtime storage: "
+                "Session runtime storage: "
                 f"session {runtime_status['session_id']} | SQLite {runtime_status['database']}"
             )
+        else:
+            st.caption("Local persistent storage: using project data/, reports/, models/, and config/ folders.")
         active_dataset = active.get("dataset", {})
         st.write(
             "Active app dataset: "
@@ -709,7 +774,10 @@ def show_current_data_snapshot():
         else:
             st.caption("No AI chat workspace processed dataset yet.")
 
-        st.caption("Raw market data is scoped to this Web session. Chat processed/results are isolated per chat.")
+        if runtime_status.get("enabled"):
+            st.caption("Raw market data is scoped to this Web session. Chat processed/results are isolated per chat.")
+        else:
+            st.caption("Raw market data is stored persistently under data/raw/. Chat processed/results are isolated per chat under data/workspaces/.")
 
 
 def page_data_setup(df):
@@ -1045,7 +1113,10 @@ def page_ai_assistant():
             st.success("LLM settings saved locally.")
 
         allow_write_tools = True
-        st.caption("AI analysis outputs are written to the current Chat workspace. Raw market data is cached only inside this Web session.")
+        if st.session_state.get("storage_mode") == "session":
+            st.caption("AI analysis outputs are written to the current Chat workspace. Raw market data is cached only inside this Web session.")
+        else:
+            st.caption("AI analysis outputs are written to the current Chat workspace. Raw market data is stored persistently under data/raw/.")
 
         chat["memory_summary"] = build_memory_summary(chat.get("messages", []))
         if chat["memory_summary"]:
@@ -1054,22 +1125,7 @@ def page_ai_assistant():
         render_chat_messages(chat)
         pending_job = chat.get("pending_job")
         if pending_job:
-            current_status = read_json_file(pending_job.get("job_file")) or {"status": "queued"}
-            st.info(
-                "LLM job is running in the background. "
-                f"Status: {current_status.get('status', 'queued')}. "
-                "You can switch pages and come back later."
-            )
-            components.html(
-                """
-                <script>
-                setTimeout(() => {
-                  window.parent.location.reload();
-                }, 3000);
-                </script>
-                """,
-                height=0,
-            )
+            render_llm_pending_job_status(chat["id"])
 
         question = st.text_area("Question", height=120, key=f"question_{chat['id']}")
 
@@ -1220,6 +1276,205 @@ def page_baselines():
     st.line_chart(equity_df.set_index("Date")[["Portfolio_Value"]])
 
 
+def format_bytes(size_bytes):
+    size = float(size_bytes or 0)
+    for unit in ["B", "KB", "MB", "GB"]:
+        if size < 1024 or unit == "GB":
+            return f"{size:.1f} {unit}" if unit != "B" else f"{int(size)} {unit}"
+        size /= 1024
+
+
+def page_exports():
+    st.subheader("Export Artifacts")
+    st.write("Create a ZIP package with generated data, figures, strategy results, and portfolio policy files.")
+
+    active_status = market_tools.get_active_analysis_dataset_status()
+    current_chat = get_current_llm_chat()
+    scope_options = {
+        "Active app dataset": "active",
+        "Main project dataset": "project",
+        "Current AI chat workspace": "workspace",
+    }
+
+    col_scope, col_name = st.columns([1.2, 2])
+    scope_label = col_scope.selectbox("Export scope", list(scope_options.keys()))
+    export_name = col_name.text_input(
+        "Export file name",
+        value=f"finrl_insight_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
+    )
+    data_scope = scope_options[scope_label]
+    export_chat_id = current_chat["id"] if data_scope == "workspace" else active_status.get("chat_id")
+
+    col1, col2, col3, col4, col5 = st.columns(5)
+    include_data = col1.checkbox("Processed data", value=True)
+    include_raw_data = col2.checkbox("Raw data", value=False)
+    include_figures = col3.checkbox("Figures", value=True)
+    include_results = col4.checkbox("Strategy results", value=True)
+    include_models = col5.checkbox("Models", value=True)
+    include_research = st.checkbox("Research reports", value=True)
+    col_filter, col_query = st.columns([1, 2])
+    category_filter_label = col_filter.selectbox(
+        "Artifact type",
+        ["All", "data", "raw_data", "figures", "results", "models", "research"],
+    )
+    artifact_query = col_query.text_input(
+        "Filter by extraction code or file name",
+        placeholder="e.g. PRICE, STRATEGY_COMPARISON, TSLA",
+    )
+    category_filter = None if category_filter_label == "All" else category_filter_label
+
+    inventory = market_tools.list_exportable_artifacts(
+        data_scope=data_scope,
+        chat_id=export_chat_id,
+        include_data=include_data,
+        include_raw_data=include_raw_data,
+        include_figures=include_figures,
+        include_strategy_results=include_results,
+        include_models=include_models,
+        include_research=include_research,
+        category=category_filter,
+        query=artifact_query,
+    )
+    st.caption(
+        f"Scope: {inventory['data_scope']} | "
+        f"Files: {inventory['file_count']} | "
+        f"Size: {format_bytes(inventory['total_size_bytes'])}"
+    )
+
+    if inventory["records"]:
+        option_labels = {
+            record["artifact_code"]: (
+                f"{record['artifact_code']} | {record['category']} | "
+                f"{record['name']} | {format_bytes(record['size_bytes'])}"
+            )
+            for record in inventory["records"]
+        }
+        selected_codes = st.multiselect(
+            "Precise extraction codes",
+            list(option_labels.keys()),
+            default=list(option_labels.keys()),
+            format_func=lambda code: option_labels[code],
+            help="Use these codes to export one specific image, dataset, strategy result, or model artifact.",
+        )
+        with st.expander("Files to export", expanded=False):
+            st.dataframe(pd.DataFrame(inventory["records"]), use_container_width=True, height=300)
+    else:
+        selected_codes = []
+        st.info(inventory["message"])
+
+    if st.button("Create export ZIP", type="primary", disabled=not selected_codes):
+        result = market_tools.export_analysis_artifacts(
+            data_scope=data_scope,
+            chat_id=export_chat_id,
+            export_name=export_name,
+            include_data=include_data,
+            include_raw_data=include_raw_data,
+            include_figures=include_figures,
+            include_strategy_results=include_results,
+            include_models=include_models,
+            include_research=include_research,
+            artifact_codes=selected_codes,
+            category=category_filter,
+            query=artifact_query,
+        )
+        if not result["exported"]:
+            st.warning(result["message"])
+        else:
+            st.session_state["last_export_result"] = result
+            st.success(f"Export package created: {Path(result['export_file']).name}")
+
+    export_result = st.session_state.get("last_export_result")
+    if export_result and Path(export_result["export_file"]).exists():
+        export_path = Path(export_result["export_file"])
+        st.download_button(
+            "Download latest export",
+            data=export_path.read_bytes(),
+            file_name=export_path.name,
+            mime="application/zip",
+            use_container_width=True,
+        )
+        st.caption(f"Saved at: {export_path}")
+
+
+def page_research_agent():
+    st.subheader("Web Research Agent")
+    st.write("Generate a lightweight research report with fundamentals, broad market context, and recent Yahoo Finance news sources.")
+
+    active_status = market_tools.get_active_analysis_dataset_status()
+    current_chat = get_current_llm_chat()
+    scope_options = {
+        "Active app dataset": "active",
+        "Main project research folder": "project",
+        "Current AI chat workspace": "workspace",
+    }
+    col_query, col_tickers = st.columns([2, 1])
+    query = col_query.text_input("Research question", value="Analyze semiconductor market leaders")
+    ticker_text = col_tickers.text_input("Tickers", value="NVDA, AMD, QQQ")
+    data_scope_label = st.selectbox("Save report to", list(scope_options.keys()))
+    data_scope = scope_options[data_scope_label]
+    research_chat_id = current_chat["id"] if data_scope == "workspace" else active_status.get("chat_id")
+
+    col_a, col_b, col_c, col_d = st.columns(4)
+    include_fundamentals = col_a.checkbox("Fundamentals", value=True)
+    include_macro = col_b.checkbox("Macro snapshot", value=True)
+    include_news = col_c.checkbox("Recent news", value=True)
+    news_limit = col_d.number_input("News per ticker", min_value=1, max_value=10, value=5, step=1)
+    macro_period = st.selectbox("Macro lookback", ["1mo", "3mo", "6mo", "1y", "2y"], index=2)
+
+    if st.button("Run research", type="primary"):
+        with st.spinner("Collecting fundamentals, macro context, and source links..."):
+            try:
+                result = market_tools.run_web_research_agent(
+                    query=query,
+                    tickers=market_tools.parse_ticker_input(ticker_text),
+                    include_fundamentals=include_fundamentals,
+                    include_macro=include_macro,
+                    include_news=include_news,
+                    news_limit=int(news_limit),
+                    macro_period=macro_period,
+                    data_scope=data_scope,
+                    chat_id=research_chat_id,
+                )
+            except Exception as exc:
+                st.error(f"Research failed: {exc}")
+            else:
+                st.session_state["last_research_result"] = result
+                st.success("Research report created.")
+
+    result = st.session_state.get("last_research_result")
+    if not result:
+        return
+
+    st.caption(f"Report: {result.get('markdown_file')}")
+    fundamentals = pd.DataFrame(result.get("fundamentals", {}).get("records", []))
+    if not fundamentals.empty:
+        st.markdown("**Fundamental Snapshot**")
+        st.dataframe(fundamentals, use_container_width=True, height=260)
+
+    macro = pd.DataFrame(result.get("macro", {}).get("records", []))
+    if not macro.empty:
+        st.markdown("**Macro Market Snapshot**")
+        st.dataframe(macro, use_container_width=True, height=260)
+
+    news = result.get("news", {}).get("records", [])
+    if news:
+        st.markdown("**Recent News Sources**")
+        for item in news[:20]:
+            title = item.get("title") or "Untitled"
+            url = item.get("url") or ""
+            st.markdown(f"- `{item.get('ticker')}` [{title}]({url})")
+
+    markdown_file = result.get("markdown_file")
+    if markdown_file and Path(markdown_file).exists():
+        st.download_button(
+            "Download Markdown report",
+            data=Path(markdown_file).read_text(encoding="utf-8"),
+            file_name=Path(markdown_file).name,
+            mime="text/markdown",
+            use_container_width=True,
+        )
+
+
 def page_tool_api_preview():
     st.subheader("LLM Tool API Preview")
     st.write("These are the Python functions that can later be registered as ChatGPT tools.")
@@ -1272,6 +1527,13 @@ run_portfolio_env_smoke_test(tickers=None, data_scope="auto", max_steps=5)
 run_portfolio_cem_training(tickers=None, data_scope="auto", generations=4, population_size=12)
 get_portfolio_rl_metrics(data_scope="auto")
 get_portfolio_rl_equity_curve(max_rows=1000, data_scope="auto")
+get_fundamental_snapshot(["AAPL", "MSFT"])
+get_macro_market_snapshot(period="6mo")
+get_market_news(["AAPL"], limit_per_ticker=5)
+run_web_research_agent("Analyze Apple fundamentals and market context", tickers=["AAPL"])
+list_exportable_artifacts(data_scope="active")
+export_analysis_artifacts(data_scope="active", export_name=None)
+export_selected_artifacts(["FIGURES_PRICE_CHART_TSLA"], data_scope="active")
         """.strip(),
         language="python",
     )
@@ -1340,6 +1602,8 @@ with st.sidebar:
         "Data Explorer",
         "EDA Results",
         "Baseline Results",
+        "Research Agent",
+        "Export Artifacts",
         "AI Assistant",
     ]
     show_developer_tools = st.checkbox("Developer tools", value=False)
@@ -1359,6 +1623,10 @@ elif page == "EDA Results":
     page_eda()
 elif page == "Baseline Results":
     page_baselines()
+elif page == "Research Agent":
+    page_research_agent()
+elif page == "Export Artifacts":
+    page_exports()
 elif page == "AI Assistant":
     page_ai_assistant()
 elif page == "LLM Tool API Preview":
@@ -1367,4 +1635,7 @@ else:
     page_tool_proposals()
 
 st.divider()
-st.caption("Baseline strategies, portfolio environment checks, and lightweight RL results are saved as runtime artifacts.")
+if st.session_state.get("storage_mode") == "session":
+    st.caption("Baseline strategies, portfolio environment checks, and lightweight RL results are saved as session runtime artifacts.")
+else:
+    st.caption("Baseline strategies, portfolio environment checks, and lightweight RL results are saved under the local reports/ and models/ folders.")

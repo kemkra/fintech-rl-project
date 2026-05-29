@@ -57,6 +57,7 @@ You are a financial data analysis assistant for a student project.
 Your job is to deliver the final analysis result, not to make the user manage data files.
 Treat cached/raw/processed data as an internal working medium. Do not repeatedly ask for permission to download or refresh ordinary market data when write tools are enabled.
 Use tools when the user asks about dataset status, ticker metrics, EDA results, baseline strategy comparison, figures, or ticker history.
+If the user asks for fundamentals, company research, macro context, market background, recent news, or deep-research style analysis, call run_web_research_agent.
 If the user asks what this project/app/assistant can do, what problems it can solve, or how to use it, call get_project_capabilities and answer from that capability map.
 If the user asks what local data is available, call get_local_data_inventory so the answer includes both processed data and raw CSV files.
 If the user asks for a chart, visual, recent performance, baseline strategy results, or a comparison for known tickers, use prepare_ticker_analysis when write tools are enabled.
@@ -75,6 +76,7 @@ If validation fails because of network/rate limits, ask the user to confirm the 
 For "recent", "last year", or similar requests, choose a reasonable default lookback period such as 1y unless the user specifies dates.
 Only ask follow-up questions when the request is genuinely ambiguous, very broad/expensive, requests real trading instructions, or needs paid/private credentials.
 If the user wants to inspect the AI Chat workspace data in other app pages, call push_llm_workspace_to_app_pages.
+If the user asks to export generated charts, datasets, strategy results, or model artifacts, call list_exportable_artifacts first when a precise file is implied, then use artifact_code values with export_selected_artifacts or export_analysis_artifacts.
 When you generate charts or refresh workspace data for the user's analysis, make sure the workspace is active for app pages. The chart tool and workflow tools usually do this automatically.
 Explain results clearly and mention whether outputs are based on the main project data or the current Chat workspace.
 Do not provide investment advice. Frame conclusions as historical analysis.
@@ -255,6 +257,28 @@ TOOL_SCHEMAS = [
     {
         "type": "function",
         "function": {
+            "name": "list_exportable_artifacts",
+            "description": "List files that can be exported for the selected analysis scope, including processed data, raw data, figures, strategy results, and model artifacts.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "data_scope": {"type": "string", "enum": ["active", "project", "workspace"], "default": "active"},
+                    "include_data": {"type": "boolean", "default": True},
+                    "include_raw_data": {"type": "boolean", "default": False},
+                    "include_figures": {"type": "boolean", "default": True},
+                    "include_strategy_results": {"type": "boolean", "default": True},
+                    "include_models": {"type": "boolean", "default": True},
+                    "include_research": {"type": "boolean", "default": True},
+                    "category": {"type": "string", "enum": ["data", "raw_data", "figures", "results", "models", "research"], "description": "Optional artifact category filter."},
+                    "query": {"type": "string", "description": "Optional text filter over extraction code, category, filename, or ZIP path."},
+                },
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "get_ticker_history",
             "description": "Get recent historical rows for one ticker from the processed feature dataset.",
             "parameters": {
@@ -298,6 +322,50 @@ TOOL_SCHEMAS = [
                 "type": "object",
                 "properties": {"ticker": {"type": "string"}},
                 "required": ["ticker"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_fundamental_snapshot",
+            "description": "Fetch compact yfinance fundamental metrics for one or more tickers, including valuation, margins, growth, leverage, beta, and recommendation fields.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "tickers": {"type": "array", "items": {"type": "string"}},
+                },
+                "required": ["tickers"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_macro_market_snapshot",
+            "description": "Fetch broad market context using major ETFs and indexes such as SPY, QQQ, IWM, TLT, GLD, UUP, USO, and VIX.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "period": {"type": "string", "default": "6mo", "description": "yfinance period such as 1mo, 3mo, 6mo, 1y, or 2y."},
+                },
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_market_news",
+            "description": "Fetch recent Yahoo Finance RSS news headlines and source URLs for selected tickers.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "tickers": {"type": "array", "items": {"type": "string"}},
+                    "limit_per_ticker": {"type": "integer", "minimum": 1, "maximum": 10, "default": 5},
+                },
                 "additionalProperties": False,
             },
         },
@@ -639,6 +707,28 @@ WRITE_TOOL_SCHEMAS = [
     {
         "type": "function",
         "function": {
+            "name": "run_web_research_agent",
+            "description": "Run a lightweight Web research agent that combines yfinance fundamentals, broad macro context, recent Yahoo Finance news sources, and saved Markdown/JSON research reports. Use for fundamentals, market background, company research, news context, and deep-research style requests.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string"},
+                    "tickers": {"type": "array", "items": {"type": "string"}},
+                    "include_fundamentals": {"type": "boolean", "default": True},
+                    "include_macro": {"type": "boolean", "default": True},
+                    "include_news": {"type": "boolean", "default": True},
+                    "news_limit": {"type": "integer", "minimum": 1, "maximum": 10, "default": 5},
+                    "macro_period": {"type": "string", "default": "6mo"},
+                    "data_scope": {"type": "string", "enum": ["active", "project", "workspace"], "default": "active"},
+                },
+                "required": ["query"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "refresh_llm_workspace_data",
             "description": "Load market data into the current Chat workspace and regenerate workspace features without modifying the main project dataset. Use automatically when lower-level data refresh is needed. Raw files are stored in the active runtime cache.",
             "parameters": {
@@ -733,6 +823,55 @@ WRITE_TOOL_SCHEMAS = [
                 "properties": {
                     "note": {"type": "string", "description": "Optional short reason for resetting the dataset."}
                 },
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "export_analysis_artifacts",
+            "description": "Create a ZIP export package containing generated processed data, optional raw data, figures, strategy result CSVs, and portfolio model files.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "data_scope": {"type": "string", "enum": ["active", "project", "workspace"], "default": "active"},
+                    "export_name": {"type": "string", "description": "Optional ZIP filename without extension."},
+                    "include_data": {"type": "boolean", "default": True},
+                    "include_raw_data": {"type": "boolean", "default": False},
+                    "include_figures": {"type": "boolean", "default": True},
+                    "include_strategy_results": {"type": "boolean", "default": True},
+                    "include_models": {"type": "boolean", "default": True},
+                    "include_research": {"type": "boolean", "default": True},
+                    "artifact_codes": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Optional exact extraction codes returned by list_exportable_artifacts.",
+                    },
+                    "category": {"type": "string", "enum": ["data", "raw_data", "figures", "results", "models", "research"], "description": "Optional artifact category filter."},
+                    "query": {"type": "string", "description": "Optional text filter over extraction code, category, filename, or ZIP path."},
+                },
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "export_selected_artifacts",
+            "description": "Create a ZIP package from exact extraction codes returned by list_exportable_artifacts. Use this for precise requests like exporting one specific chart, data file, or strategy result.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "artifact_codes": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Exact artifact_code values to export.",
+                    },
+                    "data_scope": {"type": "string", "enum": ["active", "project", "workspace"], "default": "active"},
+                    "export_name": {"type": "string", "description": "Optional ZIP filename without extension."},
+                },
+                "required": ["artifact_codes"],
                 "additionalProperties": False,
             },
         },
@@ -862,9 +1001,13 @@ TOOL_FUNCTIONS = {
     "get_eda_summary": market_tools.get_eda_summary,
     "get_data_quality_summary": market_tools.get_data_quality_summary,
     "list_available_figures": market_tools.list_available_figures,
+    "list_exportable_artifacts": market_tools.list_exportable_artifacts,
     "get_ticker_history": market_tools.get_ticker_history,
     "create_ticker_price_chart": market_tools.create_ticker_price_chart,
     "get_ticker_metrics": market_tools.get_ticker_metrics,
+    "get_fundamental_snapshot": market_tools.get_fundamental_snapshot,
+    "get_macro_market_snapshot": market_tools.get_macro_market_snapshot,
+    "get_market_news": market_tools.get_market_news,
     "screen_stock_candidates": market_tools.screen_stock_candidates,
     "get_buy_hold_metrics": market_tools.get_buy_hold_metrics,
     "get_buy_hold_equity_curve": market_tools.get_buy_hold_equity_curve,
@@ -883,11 +1026,14 @@ TOOL_FUNCTIONS = {
     "run_strategy_comparison": market_tools.run_strategy_comparison,
     "prepare_ticker_analysis": market_tools.prepare_ticker_analysis,
     "analyze_theme_candidates": market_tools.analyze_theme_candidates,
+    "run_web_research_agent": market_tools.run_web_research_agent,
     "refresh_llm_workspace_data": market_tools.refresh_llm_workspace_data,
     "refresh_llm_workspace_ticker": market_tools.refresh_llm_workspace_ticker,
     "load_shortlist_for_analysis": market_tools.load_shortlist_for_analysis,
     "push_llm_workspace_to_app_pages": market_tools.push_llm_workspace_to_app_pages,
     "reset_app_pages_to_project_dataset": market_tools.reset_app_pages_to_project_dataset,
+    "export_analysis_artifacts": market_tools.export_analysis_artifacts,
+    "export_selected_artifacts": market_tools.export_selected_artifacts,
     "propose_new_tool": market_tools.propose_new_tool,
     "promote_tool_proposal_local": market_tools.promote_tool_proposal_local,
     "register_temp_composite_tool": market_tools.register_temp_composite_tool,
@@ -949,11 +1095,14 @@ def execute_tool_call(name, arguments, allow_write_tools=False, chat_id=None):
         "screen_stock_candidates",
         "prepare_ticker_analysis",
         "analyze_theme_candidates",
+        "run_web_research_agent",
         "refresh_llm_workspace_data",
         "refresh_llm_workspace_ticker",
         "load_shortlist_for_analysis",
         "push_llm_workspace_to_app_pages",
         "reset_app_pages_to_project_dataset",
+        "export_analysis_artifacts",
+        "export_selected_artifacts",
         "propose_new_tool",
         "promote_tool_proposal_local",
         "register_temp_composite_tool",
@@ -991,6 +1140,7 @@ def execute_tool_call(name, arguments, allow_write_tools=False, chat_id=None):
         "screen_stock_candidates",
         "prepare_ticker_analysis",
         "analyze_theme_candidates",
+        "run_web_research_agent",
         "refresh_llm_workspace_data",
         "refresh_llm_workspace_ticker",
         "load_shortlist_for_analysis",
@@ -999,6 +1149,9 @@ def execute_tool_call(name, arguments, allow_write_tools=False, chat_id=None):
         "register_temp_composite_tool",
         "clear_llm_workspace",
         "merge_llm_workspace_to_project",
+        "list_exportable_artifacts",
+        "export_analysis_artifacts",
+        "export_selected_artifacts",
     }
     chat_workspace_tool_names.update(GENERATED_CHAT_WORKSPACE_TOOL_NAMES)
     if name in chat_workspace_tool_names and chat_id and "chat_id" not in arguments:

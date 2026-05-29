@@ -73,3 +73,8 @@
 73. [x] 修复 AI Assistant 跨页面状态保留和 Chat workspace 连续训练上下文问题
 74. [x] 将开发者工具页默认隐藏，简化普通 Web 使用界面
 75. [x] 增加 LLM pending job 自动刷新，并防止 Portfolio CEM 后续确认时误用非 workspace 股票
+76. [x] 将 LLM pending job 轮询从阻塞式整页 rerun 改为 Streamlit fragment 局部刷新
+77. [x] 增加统一导出功能，将图片、数据、策略结果和模型文件打包为 ZIP
+78. [x] 增加 artifact 提取码，支持按具体图片、数据或策略结果精准导出
+79. [x] 将存储模式拆分为本地持久 data/reports/models 与 Web session runtime
+80. [x] 增加基本面 / 大盘 Web Research Agent，并接入 LLM 工具和导出系统

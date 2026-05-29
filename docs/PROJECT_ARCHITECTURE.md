@@ -311,7 +311,9 @@ Debug logs:
 * AI Assistant can save each LLM/tool-call run to `reports/logs/`.
 * Logs include tool calls, compacted tool results, and final answer metadata for debugging.
 
-For the local demo workflow, AI-triggered data loading uses a runtime raw cache and per-chat analysis workspaces. The AI Assistant can refresh a Chat workspace without overwriting the main project dataset. Users can review workspace status in Data Setup and explicitly merge workspace data into the main project dataset when desired.
+For the local demo workflow, AI-triggered data loading uses the persistent project folders by default (`data/raw/`, `data/workspaces/`, `reports/`, and `models/`). The AI Assistant can refresh a Chat workspace without overwriting the main project dataset. Users can review workspace status in Data Setup and explicitly merge workspace data into the main project dataset when desired.
+
+For Streamlit Community/Web deployment, `FINTECH_STORAGE_MODE=auto` detects common Streamlit Cloud paths and environment markers. If automatic cloud detection is unavailable, set `FINTECH_STORAGE_MODE = "session"` in Streamlit secrets. In session mode, generated data is routed into `.streamlit_runtime/sessions/<session_id>/` so visitors do not share the developer's local project files.
 
 The Web app also has an active dataset pointer:
 
@@ -321,7 +323,7 @@ config/active_analysis_dataset.json
 
 In Streamlit Web sessions this pointer is stored under the session runtime config directory instead of the shared project `config/` directory. It records whether app pages should currently read the main project processed dataset or a specific Chat workspace processed dataset. It lets the LLM push an analysis dataset to Data Explorer / Baseline pages for inspection without overwriting the session's main processed feature file.
 
-Workspace storage:
+Session-mode workspace storage:
 
 ```text
 .streamlit_runtime/runtime.db                         temporary SQLite dataset registry

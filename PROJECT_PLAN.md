@@ -198,8 +198,9 @@ Detailed architecture:
 
   * Added per-session runtime directories under `.streamlit_runtime/sessions/<session_id>/`
   * Added `src/storage/runtime_store.py` with a lightweight SQLite runtime database
-  * Updated Streamlit startup to configure project tools into the current Web session runtime
-  * Routes generated raw files, processed features, reports, figures, active dataset state, LLM preferences, and Chat history away from shared project paths during Web use
+  * Updated Streamlit startup to support `FINTECH_STORAGE_MODE=auto|local|session`
+  * Uses persistent project folders (`data/`, `reports/`, `models/`, `config/`) for local runs by default
+  * Routes generated raw files, processed features, reports, figures, active dataset state, LLM preferences, and Chat history away from shared project paths during Web/session use
   * Records temporary raw/feature datasets in SQLite while keeping CSV outputs for existing EDA, baseline, and chart modules
   * Keeps the design deploy-friendly for Streamlit Community without requiring persistent cloud storage yet
   * Changed the Web data-loading proxy checkbox to default off unless `USE_PROXY=true`, because Streamlit Community cannot use a local Clash proxy
@@ -342,8 +343,21 @@ Detailed architecture:
   * Preserved AI Assistant provider, base URL, model, API key, debug, and execution-limit fields in Streamlit session state when switching pages
   * Changed automatic strategy/RL data resolution so the current Chat workspace is preferred during multi-step LLM workflows
   * Added a Portfolio CEM guard that uses the prepared Chat workspace universe when the LLM accidentally supplies mismatched follow-up tickers
-  * Added automatic pending-job page refresh so completed LLM answers appear without manually switching pages
+  * Added automatic pending-job status polling so completed LLM answers appear without manually switching pages
+  * Refined pending-job polling to use a 3-second Streamlit fragment instead of blocking `sleep` plus full-page reruns during the wait
   * Hid developer-only pages behind a sidebar `Developer tools` toggle for a cleaner Web interface
+
+* [x] Artifact export workflow
+  * Added a unified export backend that packages generated processed data, optional raw data, figures, strategy result CSVs, and Portfolio CEM policy files into ZIP archives
+  * Added a normal Streamlit `Export Artifacts` page with scope selection for active app data, main project data, or the current AI Chat workspace
+  * Exposed `list_exportable_artifacts()` and `export_analysis_artifacts()` to the LLM tool interface so natural-language requests can create export packages
+  * Added stable artifact extraction codes and `export_selected_artifacts()` so users or the LLM can precisely export one image, dataset, strategy CSV, or model file
+
+* [x] Fundamental / macro Web Research Agent
+  * Added a Streamlit `Research Agent` page for company fundamentals, broad market context, and recent news-source collection
+  * Implemented yfinance fundamental snapshots, macro ETF/index snapshots, Yahoo Finance RSS headline collection, and Markdown/JSON research report output
+  * Exposed `get_fundamental_snapshot()`, `get_macro_market_snapshot()`, `get_market_news()`, and `run_web_research_agent()` to the LLM tool interface
+  * Added research reports to artifact export inventory so generated research can be downloaded with extraction codes
 
 ---
 

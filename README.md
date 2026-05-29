@@ -9,6 +9,7 @@ The project combines market data loading, technical feature engineering, explora
 - Load US stock / ETF market data for user-selected tickers and date ranges.
 - Generate technical indicators: MA5, MA20, RSI, MACD, daily return, and volatility.
 - Run EDA summaries and charts for the active dataset.
+- Generate lightweight fundamental, macro, and recent-news research reports.
 - Backtest Buy & Hold, Moving Average crossover, and RSI threshold strategies.
 - Run a multi-asset `PortfolioEnv` and train a lightweight Portfolio CEM policy.
 - Compare traditional single-asset strategies with portfolio-level RL results.
@@ -70,13 +71,34 @@ Cloud deployments cannot use a local Clash proxy such as `127.0.0.1:7890`. Leave
 
 ## Runtime Data
 
-The Web app writes temporary session data under:
+By default, local runs use the normal persistent project folders:
+
+```text
+data/
+reports/
+models/
+config/
+```
+
+Streamlit Community/Web deployments should use temporary session data under:
 
 ```text
 .streamlit_runtime/
 ```
 
 This includes per-session raw data, processed feature files, figures, strategy results, model artifacts, LLM chat settings, and LLM background job status.
+
+Storage mode is controlled by `FINTECH_STORAGE_MODE`:
+
+- `auto` default: local runs use project folders; detected Streamlit Cloud runs use session runtime storage.
+- `local`: force persistent project folders.
+- `session`: force `.streamlit_runtime/sessions/<session_id>/` storage.
+
+If cloud detection does not trigger in a hosted environment, add this to Streamlit secrets:
+
+```toml
+FINTECH_STORAGE_MODE = "session"
+```
 
 The `data/reference/us_stock_symbols.csv` file is a local symbol-search cache. If missing, the app can regenerate it from Nasdaq symbol directories when network access is available.
 
@@ -101,6 +123,7 @@ LLM calls run as background jobs in the Streamlit app, so switching pages should
 - What local data is currently available?
 - Load NVDA, AMD, and QQQ for the last year and compare strategies.
 - Show Tesla's price chart for the last year.
+- Research Apple's fundamentals and recent market context.
 - Screen semiconductor stocks and compare the best candidates.
 - Train the portfolio CEM strategy on the active dataset.
 
