@@ -1885,7 +1885,7 @@ def push_llm_workspace_to_app_pages(note=None, chat_id=None):
     )
     return {
         "pushed": True,
-        "message": "AI workspace dataset is now the active dataset for app pages. Main project data was not overwritten.",
+        "message": "AI workspace dataset is now the active dataset for app pages. Main project data was not overwritten. Use the app sidebar pages such as Explorer, Analysis, Strategy Lab, Report, or Export to inspect it.",
         "active_dataset": get_active_analysis_dataset_status(),
         "config": config,
     }
@@ -2826,6 +2826,7 @@ def build_unified_report(
         json.dump(payload, file, ensure_ascii=False, indent=2, default=str)
 
     payload["message"] = "Unified report created."
+    payload["download_note"] = "In the Streamlit app, use the Report page or the AI answer download button. Do not open this server-local path with file://."
     return payload
 
 
@@ -3061,6 +3062,7 @@ def export_analysis_artifacts(
     return {
         "exported": True,
         "export_file": str(export_file),
+        "download_note": "In the Streamlit app, use the generated download button or the Export page. Do not open this server-local path with file://.",
         "file_count": inventory["file_count"],
         "total_size_bytes": inventory["total_size_bytes"],
         "data_scope": inventory["data_scope"],
@@ -3225,6 +3227,7 @@ def create_ticker_price_chart(ticker, start_date=None, end_date=None, months=12,
             else get_active_analysis_dataset_status()
         ),
         "message": f"Generated price chart for {ticker} from {safe_start} to {safe_end}.",
+        "view_note": "The chart is shown below the AI answer when available. To inspect the active dataset, use the app sidebar pages such as Explorer or Analysis instead of a direct URL.",
     }
 
 

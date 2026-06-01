@@ -2,6 +2,7 @@ from datetime import datetime
 import json
 import os
 from pathlib import Path
+import re
 import sys
 import threading
 import traceback
@@ -788,13 +789,68 @@ def render_chat_messages(chat):
                 st.markdown(message["content"])
 
 
+def sanitize_llm_markdown(text):
+    text = str(text or "")
+    text = re.sub(r"\[([^\]]+)\]\(file://[^)]+\)", r"\1", text)
+    text = re.sub(r"file://\S+", "[server-local file path hidden]", text)
+    text = re.sub(r"https?://[^\s)]+/~/\+/#", "the app sidebar page", text)
+    return text
+
+
+def collect_llm_output_files(value):
+    files = []
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if key in {"export_file", "markdown_file", "json_file"} and item:
+                files.append(str(item))
+            elif isinstance(item, (dict, list)):
+                files.extend(collect_llm_output_files(item))
+    elif isinstance(value, list):
+        for item in value:
+            files.extend(collect_llm_output_files(item))
+    return files
+
+
+def render_llm_output_downloads(result):
+    output_files = []
+    for tool_call in result.get("tools", []):
+        output_files.extend(collect_llm_output_files(tool_call.get("result", {})))
+
+    seen = set()
+    output_files = [path for path in output_files if not (path in seen or seen.add(path))]
+    if not output_files:
+        return
+
+    st.markdown("**Generated files**")
+    for index, file_path in enumerate(output_files):
+        path = Path(file_path)
+        if not path.exists() or not path.is_file():
+            continue
+        suffix = path.suffix.lower()
+        mime = {
+            ".zip": "application/zip",
+            ".md": "text/markdown",
+            ".json": "application/json",
+            ".csv": "text/csv",
+        }.get(suffix, "application/octet-stream")
+        st.download_button(
+            f"Download {path.name}",
+            data=path.read_bytes(),
+            file_name=path.name,
+            mime=mime,
+            key=f"llm_download_{index}_{path.name}",
+            use_container_width=True,
+        )
+
+
 def render_llm_result(result):
-    st.markdown(result["answer"])
+    st.markdown(sanitize_llm_markdown(result["answer"]))
     for tool_call in result["tools"]:
         tool_result = tool_call.get("result", {})
         figure_path = tool_result.get("figure_path")
         if figure_path and Path(figure_path).exists():
             st.image(figure_path, use_container_width=True)
+    render_llm_output_downloads(result)
     with st.expander("Tool calls", expanded=False):
         st.json(result["tools"])
     if result.get("log_path"):
