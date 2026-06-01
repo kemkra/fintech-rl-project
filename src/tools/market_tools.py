@@ -39,6 +39,8 @@ LEGACY_LLM_WORKSPACE_DIR = Path("data/llm_workspace")
 LLM_WORKSPACE_DIR = CHAT_WORKSPACES_DIR / DEFAULT_CHAT_WORKSPACE_ID
 EDA_SUMMARY_FILE = Path("reports/results/eda_summary.csv")
 DATA_QUALITY_FILE = Path("reports/results/data_quality_summary.csv")
+RISK_SUMMARY_FILE = Path("reports/results/risk_summary.csv")
+RISK_ROLLING_FILE = Path("reports/results/risk_rolling.csv")
 BUY_HOLD_EQUITY_FILE = Path("reports/results/buy_hold_equity_curves.csv")
 BUY_HOLD_METRICS_FILE = Path("reports/results/buy_hold_metrics.csv")
 MA_EQUITY_FILE = Path("reports/results/ma_equity_curves.csv")
@@ -51,6 +53,7 @@ PORTFOLIO_RL_METRICS_FILE = Path("reports/results/portfolio_rl_metrics.csv")
 PORTFOLIO_RL_MODEL_FILE = Path("models/portfolio_cem_policy.npz")
 FIGURES_DIR = Path("reports/figures")
 RESEARCH_DIR = Path("reports/research")
+GENERATED_REPORTS_DIR = Path("reports/generated")
 EXPORTS_DIR = Path("reports/exports")
 TOOL_PROPOSALS_DIR = Path("reports/tool_proposals")
 TEMP_COMPOSITE_TOOLS_FILE = Path("config/temp_composite_tools.json")
@@ -98,6 +101,7 @@ def get_project_capabilities():
                 "can_do": [
                     "Generate MA5, MA20, RSI, MACD, daily return, and volatility features.",
                     "Summarize asset-level return, risk, missing data, and date coverage.",
+                    "Calculate VaR, CVaR, rolling volatility, rolling Sharpe, drawdown duration, beta, and benchmark correlation.",
                     "Create and display price and EDA figures in the Web UI.",
                 ],
                 "example_questions": [
@@ -152,6 +156,7 @@ def get_project_capabilities():
                     "Save debug logs and expose tool calls for troubleshooting.",
                     "Export generated datasets, figures, strategy results, and policy files as ZIP packages.",
                     "Use extraction codes to export one specific chart, dataset, strategy table, or model artifact.",
+                    "Build unified Markdown/JSON reports that combine data, EDA, research, strategy, and Portfolio CEM outputs.",
                 ],
                 "example_questions": [
                     "帮我挖掘几支芯片科技相关股票，并比较它们。",
@@ -190,10 +195,10 @@ def configure_runtime_storage(session_id=None, root=None):
     """Point generated Web artifacts at a per-session runtime directory."""
     global CONFIG_DIR, ACTIVE_ANALYSIS_DATASET_FILE, REFERENCE_DATA_DIR, US_SYMBOLS_FILE
     global PROCESSED_DATA_FILE, RAW_DATA_DIR, CHAT_WORKSPACES_DIR, LLM_WORKSPACE_DIR
-    global EDA_SUMMARY_FILE, DATA_QUALITY_FILE, BUY_HOLD_EQUITY_FILE, BUY_HOLD_METRICS_FILE
+    global EDA_SUMMARY_FILE, DATA_QUALITY_FILE, RISK_SUMMARY_FILE, RISK_ROLLING_FILE, BUY_HOLD_EQUITY_FILE, BUY_HOLD_METRICS_FILE
     global MA_EQUITY_FILE, MA_METRICS_FILE, RSI_EQUITY_FILE, RSI_METRICS_FILE
     global STRATEGY_COMPARISON_FILE, PORTFOLIO_RL_EQUITY_FILE, PORTFOLIO_RL_METRICS_FILE, PORTFOLIO_RL_MODEL_FILE
-    global FIGURES_DIR, RESEARCH_DIR, EXPORTS_DIR, TOOL_PROPOSALS_DIR, TEMP_COMPOSITE_TOOLS_FILE, RUNTIME_SESSION_ID, RUNTIME_DB_FILE
+    global FIGURES_DIR, RESEARCH_DIR, GENERATED_REPORTS_DIR, EXPORTS_DIR, TOOL_PROPOSALS_DIR, TEMP_COMPOSITE_TOOLS_FILE, RUNTIME_SESSION_ID, RUNTIME_DB_FILE
 
     paths = runtime_store.ensure_runtime(session_id=session_id, root=root)
     CONFIG_DIR = paths["config_dir"]
@@ -206,6 +211,8 @@ def configure_runtime_storage(session_id=None, root=None):
     LLM_WORKSPACE_DIR = CHAT_WORKSPACES_DIR / DEFAULT_CHAT_WORKSPACE_ID
     EDA_SUMMARY_FILE = paths["results_dir"] / "eda_summary.csv"
     DATA_QUALITY_FILE = paths["results_dir"] / "data_quality_summary.csv"
+    RISK_SUMMARY_FILE = paths["results_dir"] / "risk_summary.csv"
+    RISK_ROLLING_FILE = paths["results_dir"] / "risk_rolling.csv"
     BUY_HOLD_EQUITY_FILE = paths["results_dir"] / "buy_hold_equity_curves.csv"
     BUY_HOLD_METRICS_FILE = paths["results_dir"] / "buy_hold_metrics.csv"
     MA_EQUITY_FILE = paths["results_dir"] / "ma_equity_curves.csv"
@@ -218,6 +225,7 @@ def configure_runtime_storage(session_id=None, root=None):
     PORTFOLIO_RL_MODEL_FILE = paths["session_dir"] / "models" / "portfolio_cem_policy.npz"
     FIGURES_DIR = paths["figures_dir"]
     RESEARCH_DIR = paths["research_dir"]
+    GENERATED_REPORTS_DIR = paths["generated_reports_dir"]
     EXPORTS_DIR = paths["exports_dir"]
     TOOL_PROPOSALS_DIR = paths["tool_proposals_dir"]
     TEMP_COMPOSITE_TOOLS_FILE = paths["temp_tools_file"]
@@ -239,8 +247,42 @@ def get_runtime_storage_status():
     status["processed_file"] = str(PROCESSED_DATA_FILE)
     status["chat_workspaces_dir"] = str(CHAT_WORKSPACES_DIR)
     status["research_dir"] = str(RESEARCH_DIR)
+    status["generated_reports_dir"] = str(GENERATED_REPORTS_DIR)
     status["exports_dir"] = str(EXPORTS_DIR)
     return status
+
+
+def get_runtime_diagnostics():
+    """Return runtime storage size and session diagnostics."""
+    if not RUNTIME_DB_FILE:
+        return {
+            "enabled": False,
+            "message": "Runtime storage has not been configured.",
+        }
+    diagnostics = runtime_store.get_runtime_diagnostics(
+        root=Path(RUNTIME_DB_FILE).parent,
+        current_session_id=RUNTIME_SESSION_ID,
+    )
+    diagnostics["enabled"] = True
+    diagnostics["current_session_id"] = RUNTIME_SESSION_ID
+    return diagnostics
+
+
+def cleanup_runtime_sessions(max_age_hours=24):
+    """Delete old session runtime folders, preserving the active session."""
+    if not RUNTIME_DB_FILE:
+        return {
+            "enabled": False,
+            "message": "Runtime storage has not been configured.",
+        }
+    result = runtime_store.cleanup_old_sessions(
+        root=Path(RUNTIME_DB_FILE).parent,
+        current_session_id=RUNTIME_SESSION_ID,
+        max_age_hours=max_age_hours,
+    )
+    result["enabled"] = True
+    result["current_session_id"] = RUNTIME_SESSION_ID
+    return result
 
 
 def _save_runtime_dataset(dataset_id, raw_df, feature_df=None, scope="project"):
@@ -293,6 +335,8 @@ def get_chat_workspace_paths(chat_id=None):
         "processed_file": processed_dir / "stock_features.csv",
         "figures_dir": figures_dir,
         "results_dir": results_dir,
+        "risk_summary_file": results_dir / "risk_summary.csv",
+        "risk_rolling_file": results_dir / "risk_rolling.csv",
         "buy_hold_equity_file": results_dir / "buy_hold_equity_curves.csv",
         "buy_hold_metrics_file": results_dir / "buy_hold_metrics.csv",
         "ma_equity_file": results_dir / "ma_equity_curves.csv",
@@ -304,6 +348,7 @@ def get_chat_workspace_paths(chat_id=None):
         "portfolio_rl_metrics_file": results_dir / "portfolio_rl_metrics.csv",
         "portfolio_rl_model_file": workspace_dir / "models" / "portfolio_cem_policy.npz",
         "research_dir": workspace_dir / "research",
+        "generated_reports_dir": workspace_dir / "generated_reports",
         "exports_dir": workspace_dir / "exports",
     }
 
@@ -1134,6 +1179,87 @@ def _normalize_raw_columns(df, ticker):
     return df.sort_values("Date").reset_index(drop=True)
 
 
+UPLOAD_COLUMN_ALIASES = {
+    "date": "Date",
+    "datetime": "Date",
+    "timestamp": "Date",
+    "time": "Date",
+    "ticker": "Ticker",
+    "symbol": "Ticker",
+    "asset": "Ticker",
+    "code": "Ticker",
+    "open": "Open",
+    "high": "High",
+    "low": "Low",
+    "close": "Close",
+    "adj close": "Close",
+    "adj_close": "Close",
+    "adjusted close": "Close",
+    "volume": "Volume",
+    "vol": "Volume",
+}
+
+
+def normalize_uploaded_price_data(df, default_ticker=None):
+    """Normalize user-uploaded OHLCV CSV data to Date/Ticker/Open/High/Low/Close/Volume."""
+    if df is None or df.empty:
+        raise ValueError("Uploaded CSV is empty.")
+
+    frame = df.copy()
+    frame.columns = [str(column).strip() for column in frame.columns]
+    rename_map = {}
+    for column in frame.columns:
+        normalized = str(column).strip().lower().replace("-", " ").replace("_", " ")
+        normalized = " ".join(normalized.split())
+        if normalized in UPLOAD_COLUMN_ALIASES:
+            target = UPLOAD_COLUMN_ALIASES[normalized]
+            if target not in frame.columns or column == target:
+                rename_map[column] = target
+    frame = frame.rename(columns=rename_map)
+
+    if "Date" not in frame.columns:
+        for column in frame.columns:
+            parsed_dates = pd.to_datetime(frame[column], errors="coerce")
+            if parsed_dates.notna().mean() >= 0.8:
+                frame = frame.rename(columns={column: "Date"})
+                break
+
+    if "Ticker" not in frame.columns:
+        default_ticker = normalize_ticker(default_ticker) if default_ticker else None
+        if not default_ticker:
+            raise ValueError("Uploaded CSV must include a Ticker/Symbol column, or provide a default ticker for the whole file.")
+        frame["Ticker"] = default_ticker
+
+    missing = {"Date", "Close", "Ticker"}.difference(frame.columns)
+    if missing:
+        raise ValueError(f"Uploaded CSV missing required columns: {sorted(missing)}")
+
+    frame["Ticker"] = frame["Ticker"].map(normalize_ticker)
+    frame["Date"] = pd.to_datetime(frame["Date"], errors="coerce")
+    frame["Close"] = pd.to_numeric(frame["Close"], errors="coerce")
+    for column in ["Open", "High", "Low"]:
+        if column not in frame.columns:
+            frame[column] = frame["Close"]
+        frame[column] = pd.to_numeric(frame[column], errors="coerce")
+    if "Volume" not in frame.columns:
+        frame["Volume"] = 0
+    frame["Volume"] = pd.to_numeric(frame["Volume"], errors="coerce").fillna(0)
+
+    frame = frame[["Date", "Ticker", "Open", "High", "Low", "Close", "Volume"]].dropna(subset=["Date", "Ticker", "Close"])
+    if frame.empty:
+        raise ValueError("Uploaded CSV has no valid rows after parsing dates, tickers, and close prices.")
+
+    frame = frame.sort_values(["Ticker", "Date"]).drop_duplicates(["Ticker", "Date"], keep="last").reset_index(drop=True)
+    rows_per_ticker = frame.groupby("Ticker").size()
+    short_tickers = rows_per_ticker[rows_per_ticker < 25].index.tolist()
+    if short_tickers:
+        raise ValueError(
+            "Uploaded CSV needs at least 25 rows per ticker for MA20/RSI/volatility features. "
+            f"Too short: {', '.join(short_tickers)}"
+        )
+    return frame
+
+
 def inspect_raw_ticker_in_dir(raw_data_dir, ticker, start_date=None, end_date=None, interval=SUPPORTED_INTERVAL):
     ticker = normalize_ticker(ticker)
     raw_data_dir = Path(raw_data_dir)
@@ -1382,6 +1508,8 @@ TEMP_COMPOSITE_BASE_TOOL_NAMES = {
     "get_strategy_comparison",
     "get_eda_summary",
     "get_data_quality_summary",
+    "get_risk_summary",
+    "get_risk_rolling_metrics",
     "get_ticker_history",
     "get_buy_hold_metrics",
     "get_ma_metrics",
@@ -1396,6 +1524,8 @@ def _get_temp_composite_base_tools():
         "get_strategy_comparison": get_strategy_comparison,
         "get_eda_summary": get_eda_summary,
         "get_data_quality_summary": get_data_quality_summary,
+        "get_risk_summary": get_risk_summary,
+        "get_risk_rolling_metrics": get_risk_rolling_metrics,
         "get_ticker_history": get_ticker_history,
         "get_buy_hold_metrics": get_buy_hold_metrics,
         "get_ma_metrics": get_ma_metrics,
@@ -1561,7 +1691,7 @@ def execute_temp_composite_tool(tool_name, arguments=None, chat_id=None):
         runtime_arguments = arguments.get("arguments", arguments)
         if isinstance(runtime_arguments, dict):
             merged_arguments.update(runtime_arguments)
-    if chat_id and base_tool in {"screen_stock_candidates", "get_strategy_comparison", "get_ticker_history", "get_buy_hold_metrics", "get_ma_metrics", "get_rsi_metrics"}:
+    if chat_id and base_tool in {"screen_stock_candidates", "get_strategy_comparison", "get_risk_summary", "get_risk_rolling_metrics", "get_ticker_history", "get_buy_hold_metrics", "get_ma_metrics", "get_rsi_metrics"}:
         merged_arguments.setdefault("chat_id", chat_id)
 
     result = base_function(**merged_arguments)
@@ -1688,8 +1818,11 @@ def get_active_artifact_paths():
             "figures_dir": paths["figures_dir"],
             "results_dir": paths["results_dir"],
             "research_dir": paths["research_dir"],
+            "generated_reports_dir": paths["generated_reports_dir"],
             "eda_summary_file": paths["results_dir"] / "eda_summary.csv",
             "data_quality_file": paths["results_dir"] / "data_quality_summary.csv",
+            "risk_summary_file": paths["risk_summary_file"],
+            "risk_rolling_file": paths["risk_rolling_file"],
         }
     return {
         "source": "project",
@@ -1698,8 +1831,11 @@ def get_active_artifact_paths():
         "figures_dir": FIGURES_DIR,
         "results_dir": EDA_SUMMARY_FILE.parent,
         "research_dir": RESEARCH_DIR,
+        "generated_reports_dir": GENERATED_REPORTS_DIR,
         "eda_summary_file": EDA_SUMMARY_FILE,
         "data_quality_file": DATA_QUALITY_FILE,
+        "risk_summary_file": RISK_SUMMARY_FILE,
+        "risk_rolling_file": RISK_ROLLING_FILE,
     }
 
 
@@ -1723,6 +1859,8 @@ def get_active_analysis_dataset_status():
         "results_dir": str(active_paths["results_dir"]),
         "eda_summary_file": str(active_paths["eda_summary_file"]),
         "data_quality_file": str(active_paths["data_quality_file"]),
+        "risk_summary_file": str(active_paths["risk_summary_file"]),
+        "risk_rolling_file": str(active_paths["risk_rolling_file"]),
         "note": config.get("note"),
         "updated_at": config.get("updated_at"),
         "pushed_by_chat_id": config.get("pushed_by_chat_id"),
@@ -1883,13 +2021,31 @@ def get_local_data_inventory(chat_id=None):
 
 def _resolve_results_file(file_kind, data_scope="active", chat_id=None):
     data_scope = str(data_scope or "active").lower()
+    file_map = {
+        "eda": "eda_summary.csv",
+        "quality": "data_quality_summary.csv",
+        "risk_summary": "risk_summary.csv",
+        "risk_rolling": "risk_rolling.csv",
+    }
+    if file_kind not in file_map:
+        raise ValueError(f"Unknown results file kind: {file_kind}")
     if data_scope == "active":
         paths = get_active_artifact_paths()
-        return paths["eda_summary_file"] if file_kind == "eda" else paths["data_quality_file"]
+        if file_kind == "eda":
+            return paths["eda_summary_file"]
+        if file_kind == "quality":
+            return paths["data_quality_file"]
+        return paths[file_kind + "_file"]
     if data_scope in {"workspace", "chat_workspace", "llm_workspace"}:
         paths = get_chat_workspace_paths(chat_id)
-        return paths["results_dir"] / ("eda_summary.csv" if file_kind == "eda" else "data_quality_summary.csv")
-    return EDA_SUMMARY_FILE if file_kind == "eda" else DATA_QUALITY_FILE
+        return paths["results_dir"] / file_map[file_kind]
+    project_files = {
+        "eda": EDA_SUMMARY_FILE,
+        "quality": DATA_QUALITY_FILE,
+        "risk_summary": RISK_SUMMARY_FILE,
+        "risk_rolling": RISK_ROLLING_FILE,
+    }
+    return project_files[file_kind]
 
 
 def get_eda_summary(data_scope="active", chat_id=None):
@@ -1909,6 +2065,78 @@ def get_data_quality_summary(data_scope="active", chat_id=None):
         "available": not df.empty,
         "path": str(file_path),
         "records": _json_records(df),
+    }
+
+
+def run_risk_analysis(data_scope="active", chat_id=None, benchmark_ticker="SPY", rolling_window=20):
+    from src.evaluation.risk_analysis import run_risk_analysis as calculate_and_save
+
+    paths = _resolve_export_context(data_scope=data_scope, chat_id=chat_id)
+    dataset_status = _describe_processed_file(paths["processed_file"])
+    if not dataset_status.get("available"):
+        return {
+            "available": False,
+            "message": (
+                "Risk analysis needs a loaded processed dataset first. "
+                "Use the Data page to load tickers/date range, or ask the AI Assistant to prepare market data."
+            ),
+            "processed_file": str(paths["processed_file"]),
+            "records": [],
+        }
+
+    summary_file = Path(paths["results_dir"]) / "risk_summary.csv"
+    rolling_file = Path(paths["results_dir"]) / "risk_rolling.csv"
+    summary, rolling = calculate_and_save(
+        data_file=paths["processed_file"],
+        summary_file=summary_file,
+        rolling_file=rolling_file,
+        benchmark_ticker=benchmark_ticker,
+        rolling_window=int(rolling_window),
+    )
+    return {
+        "available": not summary.empty,
+        "data_scope": paths["source"],
+        "chat_id": paths.get("chat_id"),
+        "benchmark_ticker": benchmark_ticker,
+        "rolling_window": int(rolling_window),
+        "summary_file": str(summary_file),
+        "rolling_file": str(rolling_file),
+        "rows": int(len(summary)),
+        "rolling_rows": int(len(rolling)),
+        "records": _json_records(summary),
+        "message": "Risk analysis completed." if not summary.empty else "Risk analysis produced no rows.",
+    }
+
+
+def get_risk_summary(data_scope="active", chat_id=None, ticker=None):
+    file_path = _resolve_results_file("risk_summary", data_scope=data_scope, chat_id=chat_id)
+    df = _read_csv(file_path)
+    ticker = normalize_ticker(ticker) if ticker else None
+    if ticker and not df.empty and "Ticker" in df.columns:
+        df = df[df["Ticker"] == ticker]
+    return {
+        "available": not df.empty,
+        "path": str(file_path),
+        "ticker": ticker,
+        "records": _json_records(df),
+        "message": "Risk summary is available." if not df.empty else "Risk summary is not available. Run run_risk_analysis first.",
+    }
+
+
+def get_risk_rolling_metrics(data_scope="active", chat_id=None, ticker=None, max_rows=1000):
+    file_path = _resolve_results_file("risk_rolling", data_scope=data_scope, chat_id=chat_id)
+    df = _read_csv(file_path)
+    ticker = normalize_ticker(ticker) if ticker else None
+    if ticker and not df.empty and "Ticker" in df.columns:
+        df = df[df["Ticker"] == ticker]
+    if not df.empty and "Date" in df.columns:
+        df = df.sort_values(["Ticker", "Date"]).tail(int(max_rows))
+    return {
+        "available": not df.empty,
+        "path": str(file_path),
+        "ticker": ticker,
+        "records": _json_records(df),
+        "message": "Rolling risk metrics are available." if not df.empty else "Rolling risk metrics are not available. Run run_risk_analysis first.",
     }
 
 
@@ -2020,6 +2248,8 @@ def get_fundamental_snapshot(tickers):
         record = {"Ticker": ticker, "available": bool(info)}
         for field in FUNDAMENTAL_FIELDS:
             record[field] = info.get(field)
+        record["source_provider"] = "yfinance.get_info"
+        record["source_url"] = f"https://finance.yahoo.com/quote/{ticker}"
         records.append(record)
     return {
         "available": any(record.get("available") for record in records),
@@ -2062,6 +2292,8 @@ def get_macro_market_snapshot(period="6mo"):
                 "Ticker": ticker,
                 "Name": label,
                 "available": True,
+                "source_provider": "yfinance.history",
+                "source_url": f"https://finance.yahoo.com/quote/{ticker}",
                 "last_close": float(close.iloc[-1]),
                 "return_1m": _period_return(history, 21),
                 "return_3m": _period_return(history, 63),
@@ -2111,6 +2343,7 @@ def _fetch_yahoo_rss_news(ticker, limit=5):
                 "ticker": ticker,
                 "title": title,
                 "publisher": publisher or "Yahoo Finance RSS",
+                "source_provider": "Yahoo Finance RSS",
                 "published": published,
                 "url": link,
                 "summary": summary[:500],
@@ -2159,6 +2392,89 @@ def _summarize_fundamental_record(record):
     return f"- {record.get('Ticker')}: {detail}"
 
 
+def _source_quality(provider, evidence_type):
+    provider_text = str(provider or "").lower()
+    evidence_text = str(evidence_type or "").lower()
+    if "yfinance" in provider_text and evidence_text in {"fundamentals", "macro_market"}:
+        return 0.80, "market-data vendor snapshot"
+    if "yahoo finance rss" in provider_text:
+        return 0.60, "headline/source-link feed"
+    return 0.50, "unscored public source"
+
+
+def _make_citation(citation_id, category, title, provider, url, retrieved_at, **extra):
+    score, label = _source_quality(provider, category)
+    record = {
+        "citation_id": citation_id,
+        "category": category,
+        "title": title,
+        "provider": provider,
+        "url": url,
+        "retrieved_at": retrieved_at,
+        "source_quality_score": score,
+        "source_quality_label": label,
+    }
+    record.update({key: value for key, value in extra.items() if value not in {None, ""}})
+    return record
+
+
+def build_research_citations(fundamentals=None, macro=None, news=None, retrieved_at=None):
+    """Build structured citations for research outputs."""
+    citations = []
+    retrieved_at = retrieved_at or datetime.now().isoformat(timespec="seconds")
+
+    for record in (fundamentals or {}).get("records", []):
+        ticker = record.get("Ticker")
+        if not ticker or not record.get("available"):
+            continue
+        citations.append(
+            _make_citation(
+                citation_id=f"F{len(citations) + 1}",
+                category="fundamentals",
+                title=f"{ticker} fundamental snapshot",
+                provider=record.get("source_provider") or (fundamentals or {}).get("source") or "yfinance.get_info",
+                url=record.get("source_url") or f"https://finance.yahoo.com/quote/{ticker}",
+                retrieved_at=(fundamentals or {}).get("retrieved_at") or retrieved_at,
+                ticker=ticker,
+            )
+        )
+
+    for record in (macro or {}).get("records", []):
+        ticker = record.get("Ticker")
+        if not ticker or not record.get("available"):
+            continue
+        citations.append(
+            _make_citation(
+                citation_id=f"M{len(citations) + 1}",
+                category="macro_market",
+                title=f"{ticker} macro market proxy: {record.get('Name')}",
+                provider=record.get("source_provider") or (macro or {}).get("source") or "yfinance.history",
+                url=record.get("source_url") or f"https://finance.yahoo.com/quote/{ticker}",
+                retrieved_at=(macro or {}).get("retrieved_at") or retrieved_at,
+                ticker=ticker,
+                period=(macro or {}).get("period"),
+            )
+        )
+
+    for item in (news or {}).get("records", []):
+        title = item.get("title") or "Untitled headline"
+        provider = item.get("publisher") or item.get("source_provider") or (news or {}).get("source") or "Yahoo Finance RSS"
+        citations.append(
+            _make_citation(
+                citation_id=f"N{len(citations) + 1}",
+                category="news_headline",
+                title=title,
+                provider=provider,
+                url=item.get("url"),
+                retrieved_at=(news or {}).get("retrieved_at") or retrieved_at,
+                ticker=item.get("ticker"),
+                published=item.get("published"),
+            )
+        )
+
+    return citations
+
+
 def _write_research_report(payload, output_dir, query):
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -2205,6 +2521,23 @@ def _write_research_report(payload, output_dir, query):
         url = item.get("url") or ""
         lines.append(f"- [{item.get('ticker')}] {title} | {publisher} | {published} | {url}")
 
+    lines.extend(["", "## Citations"])
+    citations = payload.get("citations", [])
+    if citations:
+        for citation in citations:
+            parts = [
+                f"[{citation.get('citation_id')}]",
+                citation.get("category"),
+                citation.get("title"),
+                citation.get("provider"),
+                citation.get("retrieved_at"),
+                citation.get("url"),
+                f"quality={citation.get('source_quality_score')}",
+            ]
+            lines.append("- " + " | ".join(str(part) for part in parts if part not in {None, ""}))
+    else:
+        lines.append("No structured citations were generated.")
+
     lines.extend(["", "## Research Notes"])
     lines.extend(payload.get("research_notes", []))
     md_file.write_text("\n".join(lines), encoding="utf-8")
@@ -2233,24 +2566,33 @@ def run_web_research_agent(
     fundamentals = get_fundamental_snapshot(requested_tickers) if include_fundamentals else {"available": False, "records": []}
     macro = get_macro_market_snapshot(period=macro_period) if include_macro else {"available": False, "records": []}
     news = get_market_news(requested_tickers, limit_per_ticker=news_limit) if include_news else {"available": False, "records": []}
+    retrieved_at = datetime.now().isoformat(timespec="seconds")
+    citations = build_research_citations(
+        fundamentals=fundamentals,
+        macro=macro,
+        news=news,
+        retrieved_at=retrieved_at,
+    )
 
     notes = [
         "Combine this research layer with the app's price, feature, strategy, and RL outputs before drawing conclusions.",
         "Fundamental fields come from yfinance and may be delayed, missing, or vendor-normalized.",
         "News headlines are source links for context; users should open the original articles for full details.",
+        "Citation quality scores are heuristic source-type indicators, not truth scores.",
     ]
     payload = {
         "available": True,
         "query": query,
         "tickers": requested_tickers,
-        "retrieved_at": datetime.now().isoformat(timespec="seconds"),
+        "retrieved_at": retrieved_at,
         "fundamentals": fundamentals,
         "macro": macro,
         "news": news,
+        "citations": citations,
         "research_notes": notes,
         "sources": [
-            {"name": "yfinance quote/fundamental data", "url": "https://pypi.org/project/yfinance/"},
-            {"name": "Yahoo Finance RSS headlines", "url": "https://finance.yahoo.com/"},
+            {"name": "yfinance quote/fundamental data", "url": "https://pypi.org/project/yfinance/", "quality_score": 0.80},
+            {"name": "Yahoo Finance RSS headlines", "url": "https://finance.yahoo.com/", "quality_score": 0.60},
         ],
     }
     output_dir = _research_output_dir(data_scope=data_scope, chat_id=chat_id)
@@ -2276,6 +2618,7 @@ def _resolve_export_context(data_scope="active", chat_id=None):
             "figures_dir": workspace_paths["figures_dir"],
             "results_dir": workspace_paths["results_dir"],
             "research_dir": workspace_paths["research_dir"],
+            "generated_reports_dir": workspace_paths["generated_reports_dir"],
         }
         source = "chat_workspace"
         chat_id = workspace_paths["chat_id"]
@@ -2287,6 +2630,7 @@ def _resolve_export_context(data_scope="active", chat_id=None):
             "figures_dir": FIGURES_DIR,
             "results_dir": EDA_SUMMARY_FILE.parent,
             "research_dir": RESEARCH_DIR,
+            "generated_reports_dir": GENERATED_REPORTS_DIR,
         }
         source = "project"
         chat_id = None
@@ -2301,6 +2645,188 @@ def _resolve_export_context(data_scope="active", chat_id=None):
         paths["model_file"] = PORTFOLIO_RL_MODEL_FILE
         paths["exports_dir"] = EXPORTS_DIR
     return paths
+
+
+def _latest_file(directory, patterns):
+    directory = Path(directory)
+    candidates = []
+    for pattern in patterns:
+        candidates.extend(directory.glob(pattern))
+    candidates = [path for path in candidates if path.is_file()]
+    if not candidates:
+        return None
+    return max(candidates, key=lambda path: path.stat().st_mtime)
+
+
+def _markdown_table(records, columns, max_rows=10):
+    rows = list(records or [])[: int(max_rows)]
+    if not rows:
+        return "No records available."
+    header = "| " + " | ".join(columns) + " |"
+    separator = "| " + " | ".join(["---"] * len(columns)) + " |"
+    lines = [header, separator]
+    for record in rows:
+        values = []
+        for column in columns:
+            value = record.get(column, "")
+            values.append(str(value).replace("\n", " ") if value is not None else "")
+        lines.append("| " + " | ".join(values) + " |")
+    return "\n".join(lines)
+
+
+def _report_output_dir(data_scope="active", chat_id=None):
+    return Path(_resolve_export_context(data_scope=data_scope, chat_id=chat_id)["generated_reports_dir"])
+
+
+def _load_latest_research_summary(paths):
+    research_file = _latest_file(paths["research_dir"], ["*.md"])
+    if not research_file:
+        return {
+            "available": False,
+            "message": "No research report found.",
+        }
+    text = research_file.read_text(encoding="utf-8", errors="replace")
+    preview = "\n".join(text.splitlines()[:40])
+    return {
+        "available": True,
+        "path": str(research_file),
+        "preview": preview,
+    }
+
+
+def build_unified_report(
+    title="FinRL Insight Analysis Report",
+    data_scope="active",
+    chat_id=None,
+    include_research=True,
+    include_strategy=True,
+    include_portfolio=True,
+    max_rows=10,
+):
+    """Build a Markdown/JSON report from the currently selected analysis artifacts."""
+    paths = _resolve_export_context(data_scope=data_scope, chat_id=chat_id)
+    dataset_status = _describe_processed_file(paths["processed_file"])
+    eda_summary = _read_csv(paths["results_dir"] / "eda_summary.csv")
+    data_quality = _read_csv(paths["results_dir"] / "data_quality_summary.csv")
+    risk_summary = _read_csv(paths["results_dir"] / "risk_summary.csv")
+    comparison = _read_csv(paths["results_dir"] / "strategy_comparison.csv") if include_strategy else pd.DataFrame()
+    portfolio_metrics_file = (
+        get_chat_workspace_paths(paths.get("chat_id"))["portfolio_rl_metrics_file"]
+        if paths["source"] == "chat_workspace"
+        else PORTFOLIO_RL_METRICS_FILE
+    )
+    portfolio_metrics = _read_csv(portfolio_metrics_file) if include_portfolio else pd.DataFrame()
+    research_summary = _load_latest_research_summary(paths) if include_research else {"available": False}
+
+    generated_at = datetime.now().isoformat(timespec="seconds")
+    output_dir = _report_output_dir(data_scope=data_scope, chat_id=chat_id)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    slug = _safe_research_slug(title)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    markdown_file = output_dir / f"report_{slug}_{timestamp}.md"
+    json_file = output_dir / f"report_{slug}_{timestamp}.json"
+
+    lines = [
+        f"# {title}",
+        "",
+        f"Generated at: {generated_at}",
+        "",
+        "Educational research output only. This is not investment advice.",
+        "",
+        "## Dataset",
+    ]
+    if dataset_status.get("available"):
+        lines.extend(
+            [
+                f"- Source: {paths['source']}",
+                f"- Rows: {dataset_status['rows']:,}",
+                f"- Tickers: {', '.join(dataset_status['tickers'])}",
+                f"- Date range: {dataset_status['start_date']} to {dataset_status['end_date']}",
+                f"- Columns: {', '.join(dataset_status.get('columns', []))}",
+            ]
+        )
+    else:
+        lines.append(f"- Dataset unavailable: {dataset_status.get('message', 'No processed data found.')}")
+
+    lines.extend(["", "## EDA Summary"])
+    if eda_summary.empty:
+        lines.append("No EDA summary is available.")
+    else:
+        preferred_columns = [column for column in ["Ticker", "Start_Date", "End_Date", "Rows", "Total_Return", "Annualized_Return", "Annualized_Volatility"] if column in eda_summary.columns]
+        lines.append(_markdown_table(_json_records(eda_summary), preferred_columns or eda_summary.columns.tolist()[:6], max_rows=max_rows))
+
+    lines.extend(["", "## Data Quality"])
+    if data_quality.empty:
+        lines.append("No data quality summary is available.")
+    else:
+        preferred_columns = [column for column in ["Ticker", "Rows", "Missing_Values", "Duplicate_Rows", "Start_Date", "End_Date"] if column in data_quality.columns]
+        lines.append(_markdown_table(_json_records(data_quality), preferred_columns or data_quality.columns.tolist()[:6], max_rows=max_rows))
+
+    lines.extend(["", "## Risk Analysis"])
+    if risk_summary.empty:
+        lines.append("No risk analysis is available.")
+    else:
+        preferred_columns = [
+            column
+            for column in ["Ticker", "Annualized_Volatility", "Sharpe_Ratio", "VaR_95", "CVaR_95", "Max_Drawdown", "Beta_vs_Benchmark"]
+            if column in risk_summary.columns
+        ]
+        lines.append(_markdown_table(_json_records(risk_summary), preferred_columns or risk_summary.columns.tolist()[:8], max_rows=max_rows))
+
+    lines.extend(["", "## Strategy Comparison"])
+    if comparison.empty:
+        lines.append("No strategy comparison is available.")
+    else:
+        preferred_columns = [column for column in ["Ticker", "Strategy", "Asset_Set", "comparison_level", "total_return", "sharpe_ratio", "max_drawdown", "rank_total_return"] if column in comparison.columns]
+        lines.append(_markdown_table(_json_records(comparison), preferred_columns or comparison.columns.tolist()[:8], max_rows=max_rows))
+
+    lines.extend(["", "## Portfolio CEM"])
+    if portfolio_metrics.empty:
+        lines.append("No Portfolio CEM metrics are available.")
+    else:
+        lines.append(_markdown_table(_json_records(portfolio_metrics), portfolio_metrics.columns.tolist()[:8], max_rows=max_rows))
+
+    lines.extend(["", "## Research Context"])
+    if research_summary.get("available"):
+        lines.append(f"Latest research report: {research_summary['path']}")
+        lines.append("")
+        lines.append(research_summary["preview"])
+    else:
+        lines.append("No research report is available.")
+
+    lines.extend(
+        [
+            "",
+            "## Notes",
+            "- Combine technical, fundamental, macro, and strategy evidence before drawing conclusions.",
+            "- Results depend on available historical data and public yfinance/Yahoo sources.",
+            "- Backtests are historical simulations and may not generalize to future markets.",
+        ]
+    )
+    markdown = "\n".join(lines)
+    markdown_file.write_text(markdown, encoding="utf-8")
+
+    payload = {
+        "available": True,
+        "title": title,
+        "data_scope": paths["source"],
+        "chat_id": paths.get("chat_id"),
+        "generated_at": generated_at,
+        "dataset_status": dataset_status,
+        "eda_summary": _json_records(eda_summary.head(max_rows)) if not eda_summary.empty else [],
+        "data_quality": _json_records(data_quality.head(max_rows)) if not data_quality.empty else [],
+        "risk_summary": _json_records(risk_summary.head(max_rows)) if not risk_summary.empty else [],
+        "strategy_comparison": _json_records(comparison.head(max_rows)) if not comparison.empty else [],
+        "portfolio_metrics": _json_records(portfolio_metrics.head(max_rows)) if not portfolio_metrics.empty else [],
+        "research_summary": research_summary,
+        "markdown_file": str(markdown_file),
+        "json_file": str(json_file),
+    }
+    with json_file.open("w", encoding="utf-8") as file:
+        json.dump(payload, file, ensure_ascii=False, indent=2, default=str)
+
+    payload["message"] = "Unified report created."
+    return payload
 
 
 def _safe_export_name(name):
@@ -2393,6 +2919,7 @@ def list_exportable_artifacts(
     include_strategy_results=True,
     include_models=True,
     include_research=True,
+    include_reports=True,
     category=None,
     query=None,
 ):
@@ -2435,6 +2962,14 @@ def list_exportable_artifacts(
                 if record:
                     records.append(record)
 
+    if include_reports:
+        reports_dir = Path(paths["generated_reports_dir"])
+        for report_path in sorted(reports_dir.glob("*")):
+            if report_path.suffix.lower() in {".json", ".md", ".txt"}:
+                record = _file_record(report_path, "reports", f"reports/{report_path.name}")
+                if record:
+                    records.append(record)
+
     records = _filter_artifact_records(_attach_artifact_codes(records), category=category, query=query)
     return {
         "available": bool(records),
@@ -2457,6 +2992,7 @@ def export_analysis_artifacts(
     include_strategy_results=True,
     include_models=True,
     include_research=True,
+    include_reports=True,
     artifact_codes=None,
     category=None,
     query=None,
@@ -2472,6 +3008,7 @@ def export_analysis_artifacts(
         include_strategy_results=include_strategy_results,
         include_models=include_models,
         include_research=include_research,
+        include_reports=include_reports,
         category=category,
         query=query,
     )
@@ -2509,6 +3046,7 @@ def export_analysis_artifacts(
         "include_strategy_results": include_strategy_results,
         "include_models": include_models,
         "include_research": include_research,
+        "include_reports": include_reports,
         "artifact_codes": artifact_codes or [],
         "category": category,
         "query": query,
@@ -2545,6 +3083,7 @@ def export_selected_artifacts(artifact_codes, data_scope="active", chat_id=None,
         include_strategy_results=True,
         include_models=True,
         include_research=True,
+        include_reports=True,
     )
 
 
@@ -3433,6 +3972,80 @@ def refresh_market_data(
         eda.run_eda(example_ticker=tickers[0])
         result["eda_summary_file"] = str(EDA_SUMMARY_FILE)
         result["figures_dir"] = str(FIGURES_DIR)
+        risk_result = run_risk_analysis(data_scope="project")
+        result["risk_summary_file"] = risk_result["summary_file"]
+        result["risk_rolling_file"] = risk_result["rolling_file"]
+
+    if run_baseline_after:
+        buy_hold_result = run_buy_hold_baseline()
+        ma_result = run_ma_baseline()
+        rsi_result = run_rsi_baseline()
+        comparison_result = run_strategy_comparison()
+        result["buy_hold_metrics_file"] = buy_hold_result["metrics_file"]
+        result["buy_hold_equity_file"] = buy_hold_result["equity_file"]
+        result["ma_metrics_file"] = ma_result["metrics_file"]
+        result["ma_equity_file"] = ma_result["equity_file"]
+        result["rsi_metrics_file"] = rsi_result["metrics_file"]
+        result["rsi_equity_file"] = rsi_result["equity_file"]
+        result["strategy_comparison_file"] = comparison_result["comparison_file"]
+
+    return result
+
+
+def import_uploaded_price_data(uploaded_file, default_ticker=None, run_eda_after=True, run_baseline_after=True):
+    """Import a user-uploaded CSV as the main project/session dataset."""
+    from src.analysis import eda
+    from src.features.feature_engineering import add_technical_indicators, save_processed_data
+
+    raw_input = pd.read_csv(uploaded_file)
+    raw_df = normalize_uploaded_price_data(raw_input, default_ticker=default_ticker)
+    tickers = sorted(raw_df["Ticker"].unique().tolist())
+
+    RAW_DATA_DIR.mkdir(parents=True, exist_ok=True)
+    source_rows = []
+    for ticker, ticker_df in raw_df.groupby("Ticker"):
+        file_path = RAW_DATA_DIR / f"{ticker}.csv"
+        ticker_df[["Date", "Open", "High", "Low", "Close", "Volume", "Ticker"]].to_csv(file_path, index=False)
+        source_rows.append(
+            {
+                "ticker": ticker,
+                "source": "uploaded_csv",
+                "rows": int(len(ticker_df)),
+                "raw_file": str(file_path),
+            }
+        )
+
+    feature_df = add_technical_indicators(raw_df)
+    if feature_df.empty:
+        raise ValueError("Feature engineering produced no rows. Check that each ticker has enough valid daily rows.")
+    save_processed_data(feature_df, output_path=PROCESSED_DATA_FILE)
+    runtime_db = _save_runtime_dataset(
+        dataset_id="project_active",
+        raw_df=raw_df,
+        feature_df=feature_df,
+        scope="project_upload",
+    )
+
+    result = {
+        "requested_tickers": tickers,
+        "data_source_mode": "uploaded_csv",
+        "source_details": source_rows,
+        "raw_rows_used": int(len(raw_df)),
+        "processed_rows": int(len(feature_df)),
+        "processed_ticker_count": int(feature_df["Ticker"].nunique()),
+        "processed_file": str(PROCESSED_DATA_FILE),
+        "runtime_database": runtime_db,
+        "message": "Uploaded CSV imported as the active project dataset.",
+    }
+
+    if run_eda_after:
+        _configure_eda_module(eda)
+        eda.run_eda(example_ticker=tickers[0])
+        result["eda_summary_file"] = str(EDA_SUMMARY_FILE)
+        result["figures_dir"] = str(FIGURES_DIR)
+        risk_result = run_risk_analysis(data_scope="project")
+        result["risk_summary_file"] = risk_result["summary_file"]
+        result["risk_rolling_file"] = risk_result["rolling_file"]
 
     if run_baseline_after:
         buy_hold_result = run_buy_hold_baseline()
@@ -3552,6 +4165,9 @@ def refresh_llm_workspace_data(
             example_ticker=tickers[0],
         )
         result.update(eda_result)
+        risk_result = run_risk_analysis(data_scope="workspace", chat_id=chat_id)
+        result["risk_summary_file"] = risk_result["summary_file"]
+        result["risk_rolling_file"] = risk_result["rolling_file"]
 
     if run_baseline_after:
         buy_hold_result = run_buy_hold_baseline(tickers=tickers, data_scope="workspace", chat_id=chat_id)

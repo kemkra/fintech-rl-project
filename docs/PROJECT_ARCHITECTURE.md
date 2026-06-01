@@ -1,419 +1,302 @@
 # Project Architecture
 
-## 1. Course Requirement Alignment
+This document is optimized for Codex and future maintainers. It explains the current architecture, not the historical path used to build it.
 
-The course project is an "intelligent data-questioning Web application". Therefore, this project should not be presented only as an RL model experiment. It should be presented as a financial market data analysis Web system with an RL trading agent as the advanced analysis module.
+## 1. System Summary
 
-Required course modules and project mapping:
+FinRL Insight is a Streamlit financial analysis app with an LLM tool-calling layer.
 
-| Course Requirement | Project Module | Output |
+Core workflow:
+
+```text
+market data
+  -> feature engineering
+  -> EDA / research / strategies / portfolio RL
+  -> Streamlit pages
+  -> LLM tools and export artifacts
+```
+
+The app supports local persistent storage and Web session storage.
+
+## 2. Main Layers
+
+| Layer | Responsibility | Main files |
 | --- | --- | --- |
-| Data file reading | `src/data/download_data.py` | runtime raw CSV cache |
-| Data preprocessing | `src/features/feature_engineering.py` | runtime processed feature dataset |
-| Data analysis methods | EDA, baseline strategies, RL agent | summary tables, strategy results |
-| Data visualization | `src/analysis/`, `src/visualization/`, Streamlit charts | `reports/figures/`, Web charts |
-| Interactive analysis and basic Q&A | `app/streamlit_app.py`, AI assistant module | user questions, generated explanations |
+| Web UI | User pages, controls, charts, downloads | `app/streamlit_app.py` |
+| Tool API | JSON-friendly functions for UI and LLM | `src/tools/market_tools.py` |
+| LLM agent | OpenAI-compatible tool-calling loop | `src/llm/assistant.py` |
+| Data | Download, fallback, raw normalization | `src/data/download_data.py`, `src/tools/market_tools.py` |
+| Features | Technical indicators | `src/features/feature_engineering.py` |
+| EDA | Summaries and figures | `src/analysis/eda.py` |
+| Risk analytics | VaR, CVaR, drawdown, rolling risk, beta/correlation | `src/evaluation/risk_analysis.py`, `src/tools/market_tools.py` |
+| Strategies | Buy & Hold, MA, RSI | `src/strategies/` |
+| RL-style portfolio | PortfolioEnv and CEM trainer | `src/environment/portfolio_env.py`, `src/training/portfolio_cem.py` |
+| Evaluation | Metrics and comparison tables | `src/evaluation/` |
+| Report Builder | Unified Markdown/JSON report generation | `src/tools/market_tools.py`, `app/streamlit_app.py` |
+| Storage | Runtime/session paths and SQLite registry | `src/storage/runtime_store.py` |
+| Tests | Deterministic synthetic-data smoke coverage | `tests/test_core_tools.py` |
+| Tool extension | Proposed/generated tools | `scripts/promote_tool_proposal.py`, `src/tools/generated_market_tools.py` |
 
-The dataset also satisfies the course data requirements:
+## 3. Storage Architecture
 
-* More than 1000 rows
-* More than 10 semantic columns after feature engineering
-* Real-world financial time-series data
-* Reproducible data collection and processing scripts
-
-## 2. Final Product Positioning
-
-Final product:
-
-```text
-An Intelligent Financial Market Analysis and Trading Strategy Web System
-```
-
-The system will allow users to:
-
-1. Load and inspect historical stock / ETF data
-2. Explore market trends and technical indicators
-3. Compare baseline trading strategies
-4. View RL trading agent behavior and performance
-5. Ask natural-language questions about the dataset and analysis results
-
-## 3. System Layers
+Storage mode is controlled by `FINTECH_STORAGE_MODE`.
 
 ```text
-Data Layer
-  raw market CSVs
-  processed feature dataset
-  runtime/session storage
-
-Analysis Layer
-  EDA
-  baseline strategies
-  RL trading / portfolio environment
-  backtesting metrics
-
-Artifact Layer
-  figures
-  metrics tables
-  equity curves
-  action logs
-  trained models
-  LLM job status files
-
-Web/UI Layer
-  Streamlit dashboard
-  interactive filters
-  charts
-  LLM tool-calling assistant
-
-Documentation Layer
-  README
-  final report
-  demo notes
-  AI usage report
+auto     local folders on developer machine, session folders on Streamlit Cloud
+local    force data/, reports/, models/, config/
+session  force .streamlit_runtime/sessions/<session_id>/
 ```
+
+Session mode runs a lightweight cleanup on app startup and preserves the active session while deleting old inactive session folders. The default cleanup age is controlled by `FINTECH_SESSION_CLEANUP_HOURS` and defaults to 24 hours.
+
+Local mode:
+
+```text
+data/raw/
+data/processed/stock_features.csv
+data/workspaces/chats/<chat_id>/
+reports/figures/
+reports/results/
+reports/research/
+reports/generated/
+reports/exports/
+models/
+config/
+```
+
+Session mode:
+
+```text
+.streamlit_runtime/runtime.db
+.streamlit_runtime/sessions/<session_id>/raw/
+.streamlit_runtime/sessions/<session_id>/processed/stock_features.csv
+.streamlit_runtime/sessions/<session_id>/workspaces/chats/<chat_id>/
+.streamlit_runtime/sessions/<session_id>/reports/figures/
+.streamlit_runtime/sessions/<session_id>/reports/results/
+.streamlit_runtime/sessions/<session_id>/reports/research/
+.streamlit_runtime/sessions/<session_id>/reports/generated/
+.streamlit_runtime/sessions/<session_id>/reports/exports/
+.streamlit_runtime/sessions/<session_id>/models/
+.streamlit_runtime/sessions/<session_id>/config/
+```
+
+Rules:
+
+- Local runs should be durable and use project folders by default.
+- Web deployments should isolate visitor data with session storage.
+- Raw CSVs are reusable source data.
+- Processed/features/results/research are analysis views and may be project-scoped or Chat-scoped.
+- Do not require or recreate `merged_stock_data.csv` as a long-lived artifact.
 
 ## 4. Data Flow
 
-The system supports two data modes:
-
-1. Stable demo mode
-
-   * Use already downloaded and processed local data.
-   * Recommended for classroom demo because it avoids network instability.
-
-2. Interactive download mode
-
-   * User selects tickers and date range in the Web UI.
-   * The app checks whether matching local raw CSV files can satisfy the requested range.
-   * The user can choose `auto` or `download`.
-   * The app then triggers data preparation, feature engineering, and EDA refresh.
-   * This demonstrates interactive analysis and makes the system more realistic.
+Manual Data page flow:
 
 ```text
-Web UI data controls
-  ↓
-selected tickers / start date / end date / proxy option
-  ↓
-local raw validation or src/data/download_data.py
-  ↓
-runtime raw cache
-  ↓
-src/features/feature_engineering.py
-  Directly combines the selected individual raw CSV files in memory.
-  The pipeline no longer keeps a saved merged raw CSV as a required artifact.
-  ↓
-runtime processed feature dataset
-  ↓
-EDA / strategies / RL environment / backtesting
-  ↓
-runtime reports/figures/
-runtime reports/results/
-models/
-  ↓
-src/tools/market_tools.py
-  ↓
-app/streamlit_app.py
+Data page ticker/date form
+  -> market_tools.refresh_market_data()
+  -> raw validation or yfinance/Yahoo chart download
+  -> raw CSV cache
+  -> feature engineering
+  -> EDA artifacts
+  -> risk summary and rolling risk artifacts
+  -> baseline strategy artifacts
+  -> active dataset reset to main loaded dataset
 ```
 
-The Web app should read saved artifacts by default. User-triggered data refresh is allowed, but long-running tasks such as RL training should remain offline before the demo. Business logic should live in reusable Python tools instead of Streamlit page code.
-
-Data refresh source selection:
+CSV upload flow:
 
 ```text
-auto
-  Use valid local raw CSV first; download from yfinance only when local data is missing or incompatible.
-
-download
-  Force yfinance download.
+Data page CSV upload
+  -> normalize_uploaded_price_data()
+  -> import_uploaded_price_data()
+  -> raw per-ticker CSV cache
+  -> feature engineering
+  -> EDA + risk + baseline strategy artifacts
+  -> active dataset reset to uploaded main dataset
 ```
 
-Local raw validation checks required columns, date coverage, and whether the file looks like daily market data. A small date tolerance is allowed because requested calendar dates may fall on non-trading days.
-
-Raw storage rule:
-
-* Local development can keep individual ticker CSV files in `data/raw/`.
-* Streamlit Web sessions use `.streamlit_runtime/sessions/<session_id>/raw/` so visitors do not depend on the author's local data files.
-* Do not keep `merged_stock_data.csv` as a long-lived artifact.
-* Build combined raw frames in memory only when generating a processed dataset.
-* Record temporary runtime datasets in SQLite for Web/session bookkeeping while keeping CSV outputs for existing analysis modules.
-
-## 5. Planned Web Pages
-
-### 5.1 Data Overview
-
-Purpose:
-
-* Prove that the system can read and summarize the dataset.
-* Show ticker list, date range, row count, columns, and missing values.
-* Allow the user to choose a custom market data period and refresh the dataset.
-
-Core interactions:
-
-* Select tickers
-* Search ticker symbols from the cached Nasdaq Trader Symbol Directory
-* Select start date and end date
-* Choose automatic cache reuse or online download mode
-* Optionally enable Clash proxy
-* Trigger `Load & Process Data`
-* Show raw / processed data preview
-* Show current processed dataset status
-
-### 5.2 EDA Dashboard
-
-Purpose:
-
-* Connect data analysis to financial insight.
-
-Charts:
-
-* Close price trend
-* Cumulative return
-* Daily return distribution
-* Volatility comparison
-* Asset correlation heatmap
-* MA / RSI / MACD indicator chart
-
-### 5.3 Strategy Backtest
-
-Purpose:
-
-* Compare classical strategies before introducing RL.
-
-Strategies:
-
-* Buy & Hold
-* Moving Average crossover
-* RSI strategy
-* Lightweight Portfolio CEM
-
-Outputs:
-
-* Equity curve
-* Performance metrics
-* Trade/action table
-
-### 5.4 RL Agent Demo
-
-Purpose:
-
-* Show the advanced module and project innovation.
-
-Outputs:
-
-* RL action timeline
-* Portfolio value curve
-* Comparison with baseline strategies
-* Explanation of state, action, and reward design
-
-### 5.5 Intelligent Q&A
-
-Purpose:
-
-* Satisfy the course requirement for interactive analysis / basic question answering.
-
-Current implementation uses the LLM Tool-Calling Extension as the main interaction path. The earlier rule-based Offline Assistant has been removed to keep the Web UI focused.
-
-## 5.6 LLM Tool-Calling Extension
-
-The project has a tool-ready backend layer:
+Risk analytics flow:
 
 ```text
-src/tools/market_tools.py
+Analysis page or run_risk_analysis()
+  -> active/project/Chat-scoped processed dataset
+  -> per-ticker VaR, CVaR, volatility, drawdown, Sharpe/Sortino, beta and correlation
+  -> risk_summary.csv + risk_rolling.csv in the active results directory
+  -> Report Builder and Export can include these CSV artifacts
 ```
 
-These functions return JSON-friendly dictionaries and can later be registered as ChatGPT / OpenAI tool calls:
+AI Assistant data flow:
 
 ```text
-get_dataset_status
-list_local_raw_data
-get_local_data_inventory
-get_llm_workspace_status
-search_us_symbols
-validate_ticker_candidates
-get_eda_summary
-get_data_quality_summary
-list_available_figures
-get_ticker_history
-create_ticker_price_chart
-get_ticker_metrics
-screen_stock_candidates
-load_shortlist_for_analysis
-refresh_llm_workspace_data
-refresh_llm_workspace_ticker
-merge_llm_workspace_to_project
-clear_llm_workspace
-run_buy_hold_baseline
-get_buy_hold_metrics
-get_buy_hold_equity_curve
-run_ma_baseline
-get_ma_metrics
-get_ma_equity_curve
-run_rsi_baseline
-get_rsi_metrics
-get_rsi_equity_curve
-run_strategy_comparison
-get_strategy_comparison
-run_portfolio_env_smoke_test
-run_portfolio_cem_training
-get_portfolio_rl_metrics
-get_portfolio_rl_equity_curve
-get_project_capabilities
-get_active_analysis_dataset_status
-push_llm_workspace_to_app_pages
-reset_app_pages_to_project_dataset
+user asks natural-language question
+  -> app/streamlit_app.py starts a background job file under config/llm_jobs or session config/llm_jobs
+  -> src/llm/assistant.py
+  -> tool call into market_tools
+  -> Chat-scoped workspace when write tools generate analysis data
+  -> AI Assistant job dashboard reads queued/running/completed/failed JSON status files
+  -> optional push_llm_workspace_to_app_pages()
+  -> normal pages read active dataset pointer
 ```
 
-This keeps Streamlit as the presentation layer while the analysis tools can be reused by:
-
-* Streamlit pages
-* future OpenAI function calling
-* future MCP server wrapper
-* command-line scripts
-
-Current LLM integration:
+Research flow:
 
 ```text
-src/llm/assistant.py
+Research page or run_web_research_agent()
+  -> yfinance fundamentals
+  -> macro ETF/index snapshot
+  -> Yahoo Finance RSS news links
+  -> structured citations with source quality scores
+  -> Markdown + JSON report in reports/research or Chat workspace research dir
 ```
 
-The first implementation uses OpenAI-compatible Chat Completions and tool-calling APIs. The Streamlit page lets the user choose:
+Unified report flow:
 
-* OpenAI
-* DeepSeek
-* Alibaba Bailian / DashScope compatible endpoint
-* Ollama Local
-* LM Studio Local
-* Custom OpenAI-compatible endpoint
+```text
+Report page or build_unified_report()
+  -> active/project/Chat-scoped processed dataset
+  -> EDA summary + data quality + risk summary + latest research + strategy comparison + Portfolio CEM metrics
+  -> Markdown + JSON report in reports/generated or Chat workspace generated_reports dir
+  -> optional Export ZIP entry
+```
 
-Users enter their own API key at runtime. The key is not saved by the project. Local providers such as Ollama and LM Studio can use placeholder keys because local OpenAI-compatible servers usually do not require real API keys.
+Export flow:
 
-Local LLM support:
+```text
+list_exportable_artifacts()
+  -> data / figures / results / research / reports / models inventory
+  -> stable artifact_code per file
+  -> export_analysis_artifacts() or export_selected_artifacts()
+  -> ZIP with metadata.json
+```
 
-* Ollama model discovery uses the local `/api/tags` endpoint and fills a model dropdown when available.
-* Alibaba Bailian, LM Studio, and custom OpenAI-compatible endpoints can optionally load models from `/models`.
-* Manual model input remains available as a fallback when model discovery is unavailable.
-* Local providers do not require a real API key; a placeholder is used if the field is empty.
-* Provider, base URL, and model preferences can be saved locally in `config/llm_preferences.json`.
-* API keys are saved only when the user explicitly enables local key remembering.
+## 5. Active Dataset Pointer
 
-Chat context:
+The app pages read from the active dataset pointer rather than hardcoding `data/processed/stock_features.csv`.
 
-* The AI Assistant supports multiple independent chats in the current Streamlit session.
-* Each chat stores its own messages, last result, and compact memory summary.
-* The UI presents a chat-list layout with create, switch, rename, clear, and delete actions.
-* Chat history is saved locally in `config/llm_chats.json`, separate from API key preferences.
-* LLM calls receive the compact memory summary plus recent messages from the active chat only.
-* Full tool results are kept in debug logs and are not automatically injected into future context.
-* LLM calls run as background jobs in the Web app. Switching Streamlit pages should not interrupt ordinary in-progress requests, although a full server process restart still stops running jobs.
-
-Debug logs:
-
-* AI Assistant can save each LLM/tool-call run to `reports/logs/`.
-* Logs include tool calls, compacted tool results, and final answer metadata for debugging.
-
-For the local demo workflow, AI-triggered data loading uses the persistent project folders by default (`data/raw/`, `data/workspaces/`, `reports/`, and `models/`). The AI Assistant can refresh a Chat workspace without overwriting the main project dataset. Users can review workspace status in Data Setup and explicitly merge workspace data into the main project dataset when desired.
-
-For Streamlit Community/Web deployment, `FINTECH_STORAGE_MODE=auto` detects common Streamlit Cloud paths and environment markers. If automatic cloud detection is unavailable, set `FINTECH_STORAGE_MODE = "session"` in Streamlit secrets. In session mode, generated data is routed into `.streamlit_runtime/sessions/<session_id>/` so visitors do not share the developer's local project files.
-
-The Web app also has an active dataset pointer:
+Local mode:
 
 ```text
 config/active_analysis_dataset.json
 ```
 
-In Streamlit Web sessions this pointer is stored under the session runtime config directory instead of the shared project `config/` directory. It records whether app pages should currently read the main project processed dataset or a specific Chat workspace processed dataset. It lets the LLM push an analysis dataset to Data Explorer / Baseline pages for inspection without overwriting the session's main processed feature file.
-
-Session-mode workspace storage:
+Session mode:
 
 ```text
-.streamlit_runtime/runtime.db                         temporary SQLite dataset registry
-.streamlit_runtime/sessions/<session_id>/raw/          session raw cache
-.streamlit_runtime/sessions/<session_id>/processed/    session main processed dataset
-.streamlit_runtime/sessions/<session_id>/workspaces/   per-chat processed/results/figures
-.streamlit_runtime/sessions/<session_id>/config/llm_jobs/ background LLM job status
+.streamlit_runtime/sessions/<session_id>/config/active_analysis_dataset.json
 ```
 
-Raw market CSV files are shared within one Web session, not across all visitors. Chat-level separation is most useful for processed datasets, figures, and strategy results because those represent a temporary analytical view rather than reusable source data.
+The pointer records:
 
-Candidate discovery workflow:
+- `source`: `project` or `chat_workspace`
+- `chat_id`: when a Chat workspace is active
+- `note`
+- `updated_at`
+
+Pages using this pointer:
+
+- Explorer
+- Analysis
+- Research save scope when set to active/project/workspace
+- Strategy Lab
+- Export
+
+## 6. Streamlit UI Contract
+
+Main pages:
 
 ```text
-User asks for promising stocks
-  ↓
-screen_stock_candidates()
-  Uses the cached symbol universe, local raw files, and yfinance fallback
-  ↓
-Shortlist of candidates by historical risk/return metrics
-  ↓
-load_shortlist_for_analysis()
-  Loads only the shortlist into the current Chat workspace
-  ↓
-Feature engineering, baseline strategies, charts, and LLM explanation
+Data
+Explorer
+Analysis
+Research
+Strategy Lab
+Report
+AI Assistant
+Export
 ```
 
-The screener output should be described as historical candidate discovery, not direct investment advice.
-
-Ticker resolution workflow:
+Developer pages:
 
 ```text
-User mentions company name
-  ↓
-LLM proposes one or more ticker candidates
-  ↓
-validate_ticker_candidates checks local dataset and yfinance validity
-  ↓
-Only validated tickers are used for download, charting, or analysis
+Runtime Diagnostics
+LLM Tool API Preview
+Tool Proposals
 ```
 
-This avoids relying on a hard-coded translation dictionary and keeps the workflow extensible to new companies and markets.
+UI rules:
 
-## 6. RL Scope
+- Keep common user paths simple.
+- Hide paths, raw cache details, workspace internals, and merge tools behind advanced/developer sections.
+- Do not put heavy business logic in Streamlit callbacks.
+- Use `st.fragment(run_every="3s")` only for lightweight LLM pending-job polling.
 
-The RL component should be positioned as an advanced analysis feature, not the only project goal.
+## 7. LLM Tool Architecture
 
-Current stage:
-
-* `TradingEnv`: single-asset trading environment with hold / buy / sell actions
-* `PortfolioEnv`: multi-asset portfolio management environment
-* Portfolio actions: continuous non-negative allocation weights across cash and assets
-* `Portfolio CEM`: lightweight RL-style training scaffold with saved metrics, equity curve, training history, and policy weights
-
-Practical delivery path:
-
-1. First finish EDA and baseline strategies.
-2. Build multi-asset portfolio environment.
-3. Add lightweight RL-style training.
-4. Use Web UI to compare portfolio RL against traditional baselines.
-5. Add heavier PPO/DQN only if time permits.
-
-## 7. Required Submission Materials
-
-The final submission should include:
-
-* Source code
-* Test data with more than 1000 rows
-* Data processing scripts
-* README with setup and run instructions
-* Final report or demo notes
-* Demo video or live demo if required by the course
-* AI usage report and reflection
-* Code source notes at function or file level where practical
-
-## 8. AI Usage Documentation Plan
-
-The course explicitly requires transparent AI usage disclosure. We will maintain:
+LLM entry point:
 
 ```text
-docs/AI_USAGE_LOG.md
+src/llm/assistant.py::run_llm_tool_chat()
 ```
 
-Each important AI collaboration record should include:
+Tool registry:
 
-* Task goal
-* Prompt summary
-* AI output summary
-* Human decision / modification
-* Verification method
-* Final result
+```text
+src/llm/assistant.py::TOOL_FUNCTIONS
+src/llm/assistant.py::TOOL_SCHEMAS
+src/llm/assistant.py::WRITE_TOOL_SCHEMAS
+```
 
-At least five key cases should be recorded before final submission.
+Tool implementation:
+
+```text
+src/tools/market_tools.py
+```
+
+Important tool families:
+
+- Dataset status and inventory
+- Ticker search and validation
+- Data refresh and Chat workspace refresh
+- Price chart and ticker history
+- EDA summaries
+- Risk analytics
+- Strategy baselines and comparison
+- Portfolio CEM training and metrics
+- Fundamental/macro/news research
+- Structured citations and source quality scores
+- Unified report generation
+- Export inventory and ZIP creation
+- Tool proposal, promotion, and temporary composite tools
+
+Write tools are enabled in the Streamlit AI Assistant by default, but generated data is scoped by storage mode and Chat workspace logic.
+
+## 8. Current Limitations
+
+- Portfolio CEM is a lightweight RL-style baseline, not a full PPO/DQN deep RL agent.
+- yfinance/Yahoo data can be delayed, missing, rate-limited, or structurally inconsistent.
+- Research Agent uses public yfinance/Yahoo RSS by default with structured citations; it is not a full paid-search deep research system.
+- Streamlit Community session storage is temporary and not durable; old inactive sessions are cleaned up by age.
+- The app is educational and should not provide investment advice.
+
+## 9. Verification
+
+Core checks:
+
+```bash
+.venv/bin/python -m py_compile app/streamlit_app.py src/tools/market_tools.py src/llm/assistant.py src/storage/runtime_store.py src/evaluation/risk_analysis.py
+.venv/bin/python -m unittest discover -s tests -v
+git diff --check
+```
+
+The initial test suite uses synthetic data and no network calls. It covers runtime registry writes, CSV upload import, risk metrics, unified report generation, strategy comparison, export ZIP creation, and LLM risk-tool registration.
+
+## 10. Recommended Extension Points
+
+| Goal | Best extension point |
+| --- | --- |
+| Add sector concentration risk | Extend `src/evaluation/risk_analysis.py` with sector metadata and concentration summaries |
+| Add PDF/DOCX report export | Extend `build_unified_report()` output conversion and export integration |
+| Add search-provider research | Add Tavily/Brave/SerpAPI provider functions in `market_tools.py` or new `src/research/` package |
+| Add PPO/DQN | New training module under `src/training/`; keep PortfolioEnv contract stable |
+| Add tests | New `tests/` using synthetic data and no network dependency |

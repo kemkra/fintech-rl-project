@@ -1,5 +1,6 @@
 from datetime import datetime
 from pathlib import Path
+import shutil
 import sqlite3
 
 import pandas as pd
@@ -32,6 +33,7 @@ def get_runtime_paths(session_id=None, root=None):
         "results_dir": session_dir / "reports" / "results",
         "figures_dir": session_dir / "reports" / "figures",
         "research_dir": session_dir / "reports" / "research",
+        "generated_reports_dir": session_dir / "reports" / "generated",
         "exports_dir": session_dir / "reports" / "exports",
         "logs_dir": session_dir / "reports" / "logs",
         "tool_proposals_dir": session_dir / "reports" / "tool_proposals",
@@ -52,6 +54,7 @@ def ensure_runtime(session_id=None, root=None):
         "results_dir",
         "figures_dir",
         "research_dir",
+        "generated_reports_dir",
         "exports_dir",
         "logs_dir",
         "tool_proposals_dir",
@@ -60,6 +63,94 @@ def ensure_runtime(session_id=None, root=None):
         paths[key].mkdir(parents=True, exist_ok=True)
     init_database(paths["db_file"])
     return paths
+
+
+def get_directory_size_bytes(path):
+    path = Path(path)
+    if not path.exists():
+        return 0
+    if path.is_file():
+        return path.stat().st_size
+
+    total = 0
+    for child in path.rglob("*"):
+        try:
+            if child.is_file():
+                total += child.stat().st_size
+        except OSError:
+            continue
+    return int(total)
+
+
+def cleanup_old_sessions(root=None, current_session_id=None, max_age_hours=24):
+    root = Path(root or RUNTIME_ROOT)
+    sessions_dir = root / "sessions"
+    current_session_id = normalize_session_id(current_session_id) if current_session_id else None
+    if not sessions_dir.exists():
+        return {
+            "removed_count": 0,
+            "removed_sessions": [],
+            "max_age_hours": max_age_hours,
+            "sessions_dir": str(sessions_dir),
+        }
+
+    now_ts = datetime.now().timestamp()
+    max_age_seconds = max(0, float(max_age_hours)) * 3600
+    removed = []
+    for session_dir in sessions_dir.iterdir():
+        if not session_dir.is_dir():
+            continue
+        if current_session_id and session_dir.name == current_session_id:
+            continue
+        try:
+            age_seconds = now_ts - session_dir.stat().st_mtime
+        except OSError:
+            continue
+        if age_seconds <= max_age_seconds:
+            continue
+        size_bytes = get_directory_size_bytes(session_dir)
+        shutil.rmtree(session_dir, ignore_errors=True)
+        removed.append(
+            {
+                "session_id": session_dir.name,
+                "age_hours": round(age_seconds / 3600, 2),
+                "size_bytes": size_bytes,
+            }
+        )
+
+    return {
+        "removed_count": len(removed),
+        "removed_sessions": removed,
+        "max_age_hours": max_age_hours,
+        "sessions_dir": str(sessions_dir),
+    }
+
+
+def get_runtime_diagnostics(root=None, current_session_id=None):
+    root = Path(root or RUNTIME_ROOT)
+    sessions_dir = root / "sessions"
+    session_records = []
+    if sessions_dir.exists():
+        for session_dir in sorted(sessions_dir.iterdir()):
+            if not session_dir.is_dir():
+                continue
+            stat = session_dir.stat()
+            session_records.append(
+                {
+                    "session_id": session_dir.name,
+                    "is_current": normalize_session_id(current_session_id) == session_dir.name if current_session_id else False,
+                    "size_bytes": get_directory_size_bytes(session_dir),
+                    "modified_at": datetime.fromtimestamp(stat.st_mtime).isoformat(timespec="seconds"),
+                }
+            )
+
+    return {
+        "root": str(root),
+        "database": str(root / DATABASE_NAME),
+        "root_size_bytes": get_directory_size_bytes(root),
+        "session_count": len(session_records),
+        "sessions": session_records,
+    }
 
 
 def get_connection(db_file):

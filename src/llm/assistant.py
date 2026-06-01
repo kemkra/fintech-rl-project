@@ -57,9 +57,11 @@ You are a financial data analysis assistant for a student project.
 Your job is to deliver the final analysis result, not to make the user manage data files.
 Treat cached/raw/processed data as an internal working medium. Do not repeatedly ask for permission to download or refresh ordinary market data when write tools are enabled.
 Use tools when the user asks about dataset status, ticker metrics, EDA results, baseline strategy comparison, figures, or ticker history.
-If the user asks for fundamentals, company research, macro context, market background, recent news, or deep-research style analysis, call run_web_research_agent.
+If the user asks about risk, volatility, drawdown, VaR, CVaR, beta, or correlation for loaded data, call run_risk_analysis when write tools are enabled, then use get_risk_summary.
+If the user asks for fundamentals, company research, macro context, market background, recent news, citations, sources, or deep-research style analysis, call run_web_research_agent and cite citation_id values when useful.
 If the user asks what this project/app/assistant can do, what problems it can solve, or how to use it, call get_project_capabilities and answer from that capability map.
 If the user asks what local data is available, call get_local_data_inventory so the answer includes both processed data and raw CSV files.
+If the user asks for a combined report, final report, analysis summary, or report export, call build_unified_report.
 If the user asks for a chart, visual, recent performance, baseline strategy results, or a comparison for known tickers, use prepare_ticker_analysis when write tools are enabled.
 If the user asks to discover promising stocks, find stocks worth researching, screen buy candidates, or analyze a theme/industry, use analyze_theme_candidates when write tools are enabled.
 For follow-up confirmations such as "start training", "continue", "confirm", or "run portfolio management" after data has already been prepared in the current chat, do not invent or replace tickers. First use the current Chat workspace data, and call run_portfolio_cem_training with data_scope="workspace" or without a ticker list.
@@ -249,6 +251,37 @@ TOOL_SCHEMAS = [
     {
         "type": "function",
         "function": {
+            "name": "get_risk_summary",
+            "description": "Get saved risk metrics by ticker, including volatility, VaR, CVaR, drawdown, beta, and benchmark correlation.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "data_scope": {"type": "string", "enum": ["active", "project", "workspace"], "default": "active"},
+                    "ticker": {"type": "string", "description": "Optional ticker filter."},
+                },
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_risk_rolling_metrics",
+            "description": "Get saved rolling risk metrics such as rolling volatility, rolling Sharpe, and drawdown.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "data_scope": {"type": "string", "enum": ["active", "project", "workspace"], "default": "active"},
+                    "ticker": {"type": "string", "description": "Optional ticker filter."},
+                    "max_rows": {"type": "integer", "minimum": 1, "maximum": 5000, "default": 1000},
+                },
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "list_available_figures",
             "description": "List generated EDA figure files.",
             "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
@@ -269,7 +302,8 @@ TOOL_SCHEMAS = [
                     "include_strategy_results": {"type": "boolean", "default": True},
                     "include_models": {"type": "boolean", "default": True},
                     "include_research": {"type": "boolean", "default": True},
-                    "category": {"type": "string", "enum": ["data", "raw_data", "figures", "results", "models", "research"], "description": "Optional artifact category filter."},
+                    "include_reports": {"type": "boolean", "default": True},
+                    "category": {"type": "string", "enum": ["data", "raw_data", "figures", "results", "models", "research", "reports"], "description": "Optional artifact category filter."},
                     "query": {"type": "string", "description": "Optional text filter over extraction code, category, filename, or ZIP path."},
                 },
                 "additionalProperties": False,
@@ -549,6 +583,22 @@ WRITE_TOOL_SCHEMAS = [
     {
         "type": "function",
         "function": {
+            "name": "run_risk_analysis",
+            "description": "Calculate and save risk analytics for the selected processed dataset, including VaR, CVaR, rolling volatility, rolling Sharpe, drawdown, beta, and correlation.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "data_scope": {"type": "string", "enum": ["active", "project", "workspace"], "default": "active"},
+                    "benchmark_ticker": {"type": "string", "default": "SPY"},
+                    "rolling_window": {"type": "integer", "minimum": 5, "maximum": 252, "default": 20},
+                },
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "run_buy_hold_baseline",
             "description": "Run or rerun the Buy & Hold baseline strategy.",
             "parameters": {
@@ -708,7 +758,7 @@ WRITE_TOOL_SCHEMAS = [
         "type": "function",
         "function": {
             "name": "run_web_research_agent",
-            "description": "Run a lightweight Web research agent that combines yfinance fundamentals, broad macro context, recent Yahoo Finance news sources, and saved Markdown/JSON research reports. Use for fundamentals, market background, company research, news context, and deep-research style requests.",
+            "description": "Run a lightweight Web research agent that combines yfinance fundamentals, broad macro context, recent Yahoo Finance news sources, structured citations, source quality scores, and saved Markdown/JSON research reports. Use for fundamentals, market background, company research, news context, source/citation requests, and deep-research style requests.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -722,6 +772,25 @@ WRITE_TOOL_SCHEMAS = [
                     "data_scope": {"type": "string", "enum": ["active", "project", "workspace"], "default": "active"},
                 },
                 "required": ["query"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "build_unified_report",
+            "description": "Build a unified Markdown/JSON report from the selected dataset, EDA, data quality, risk analysis, latest research context, strategy comparison, and Portfolio CEM metrics.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "title": {"type": "string", "default": "FinRL Insight Analysis Report"},
+                    "data_scope": {"type": "string", "enum": ["active", "project", "workspace"], "default": "active"},
+                    "include_research": {"type": "boolean", "default": True},
+                    "include_strategy": {"type": "boolean", "default": True},
+                    "include_portfolio": {"type": "boolean", "default": True},
+                    "max_rows": {"type": "integer", "minimum": 3, "maximum": 50, "default": 10},
+                },
                 "additionalProperties": False,
             },
         },
@@ -843,12 +912,13 @@ WRITE_TOOL_SCHEMAS = [
                     "include_strategy_results": {"type": "boolean", "default": True},
                     "include_models": {"type": "boolean", "default": True},
                     "include_research": {"type": "boolean", "default": True},
+                    "include_reports": {"type": "boolean", "default": True},
                     "artifact_codes": {
                         "type": "array",
                         "items": {"type": "string"},
                         "description": "Optional exact extraction codes returned by list_exportable_artifacts.",
                     },
-                    "category": {"type": "string", "enum": ["data", "raw_data", "figures", "results", "models", "research"], "description": "Optional artifact category filter."},
+                    "category": {"type": "string", "enum": ["data", "raw_data", "figures", "results", "models", "research", "reports"], "description": "Optional artifact category filter."},
                     "query": {"type": "string", "description": "Optional text filter over extraction code, category, filename, or ZIP path."},
                 },
                 "additionalProperties": False,
@@ -950,6 +1020,8 @@ WRITE_TOOL_SCHEMAS = [
                             "get_strategy_comparison",
                             "get_eda_summary",
                             "get_data_quality_summary",
+                            "get_risk_summary",
+                            "get_risk_rolling_metrics",
                             "get_ticker_history",
                             "get_buy_hold_metrics",
                             "get_ma_metrics",
@@ -1000,6 +1072,9 @@ TOOL_FUNCTIONS = {
     "inspect_local_raw_ticker": market_tools.inspect_local_raw_ticker,
     "get_eda_summary": market_tools.get_eda_summary,
     "get_data_quality_summary": market_tools.get_data_quality_summary,
+    "run_risk_analysis": market_tools.run_risk_analysis,
+    "get_risk_summary": market_tools.get_risk_summary,
+    "get_risk_rolling_metrics": market_tools.get_risk_rolling_metrics,
     "list_available_figures": market_tools.list_available_figures,
     "list_exportable_artifacts": market_tools.list_exportable_artifacts,
     "get_ticker_history": market_tools.get_ticker_history,
@@ -1027,6 +1102,7 @@ TOOL_FUNCTIONS = {
     "prepare_ticker_analysis": market_tools.prepare_ticker_analysis,
     "analyze_theme_candidates": market_tools.analyze_theme_candidates,
     "run_web_research_agent": market_tools.run_web_research_agent,
+    "build_unified_report": market_tools.build_unified_report,
     "refresh_llm_workspace_data": market_tools.refresh_llm_workspace_data,
     "refresh_llm_workspace_ticker": market_tools.refresh_llm_workspace_ticker,
     "load_shortlist_for_analysis": market_tools.load_shortlist_for_analysis,
@@ -1087,6 +1163,7 @@ def execute_tool_call(name, arguments, allow_write_tools=False, chat_id=None):
     refresh_generated_tool_registry()
     write_tool_names = {
         "run_buy_hold_baseline",
+        "run_risk_analysis",
         "run_ma_baseline",
         "run_rsi_baseline",
         "run_strategy_comparison",
@@ -1096,6 +1173,7 @@ def execute_tool_call(name, arguments, allow_write_tools=False, chat_id=None):
         "prepare_ticker_analysis",
         "analyze_theme_candidates",
         "run_web_research_agent",
+        "build_unified_report",
         "refresh_llm_workspace_data",
         "refresh_llm_workspace_ticker",
         "load_shortlist_for_analysis",
@@ -1129,9 +1207,12 @@ def execute_tool_call(name, arguments, allow_write_tools=False, chat_id=None):
         "get_rsi_metrics",
         "get_rsi_equity_curve",
         "get_strategy_comparison",
+        "get_risk_summary",
+        "get_risk_rolling_metrics",
         "get_portfolio_rl_metrics",
         "get_portfolio_rl_equity_curve",
         "run_buy_hold_baseline",
+        "run_risk_analysis",
         "run_ma_baseline",
         "run_rsi_baseline",
         "run_strategy_comparison",
@@ -1141,6 +1222,7 @@ def execute_tool_call(name, arguments, allow_write_tools=False, chat_id=None):
         "prepare_ticker_analysis",
         "analyze_theme_candidates",
         "run_web_research_agent",
+        "build_unified_report",
         "refresh_llm_workspace_data",
         "refresh_llm_workspace_ticker",
         "load_shortlist_for_analysis",

@@ -1,80 +1,41 @@
-1. [x] 下载数据
-2. [x] 清洗数据 / 特征工程
-3. [x] 做简单 RL 环境
-4. [x] 明确项目架构和 Web/UI 数据流
-5. [x] 参考课程 PDF 完善项目定位和系统架构
-6. [x] 建立 AI 使用记录模板
-7. [x] 审查并小幅加固已实现 Python 模块
-8. [x] 做 EDA 图表
-9. [x] 做 Streamlit Web Demo 骨架
-10. [x] 优化 Streamlit 为轻量按需渲染版本
-11. [x] 封装 LLM 可调用的 market tools
-12. [x] 做 Buy & Hold
-13. [x] 初步建立通用回测指标模块
-14. [x] 做 MA 策略
-15. [x] 做 RSI 策略
-16. [x] 做统一回测指标整合
-17. [x] 做多资产 PortfolioEnv
-18. [ ] 训练 DQN / PPO
-19. [x] 比较 RL 和传统策略
-20. [ ] 完善 Streamlit Web 正式版
-21. [x] 加智能问答 / LLM 工具调用初版
-22. [x] 支持用户输入任意股票代码下载分析
-23. [x] 增加本地免费 LLM 预设，并删除冗余 Offline Assistant
-24. [x] 扩展 LLM 工具：ticker 解析、图表生成、单股票刷新
-25. [x] 优化 LLM 调用、本地 raw 复用和调试日志
-26. [x] 合并阿里云百炼 / DashScope 配置入口，并支持按需拉取模型列表
-27. [x] 合并 AI Assistant 中的 Model / Available Models 控件
-28. [x] 将 LLM 工具调用轮数和请求超时时间改为可配置
-29. [x] 简化数据源选择为 Auto / Online，并将 LLM 限制改为显式开关
-30. [x] 增加本地 raw 数据库存工具，避免 AI 只汇报当前 processed 数据
-31. [x] 删除 AI Assistant 示例问题，并让数据刷新后自动更新 Buy & Hold baseline
-32. [x] 在 Data Setup 中显示当前 processed 数据和 raw 本地库存
-33. [x] 保存最近一次 LLM 回答，切换页面后仍可查看
-34. [x] 支持多个独立 AI Chat，并为每个 Chat 使用精简上下文
-35. [x] 增加本地 LLM 配置记忆，支持可选保存 API Key
-36. [x] 合并数据下载 ticker 选择器，支持搜索和手动新增
-37. [x] 优化 AI Chat 列表布局，并支持重命名会话
-38. [x] 持久化保存 AI Chat 历史，并将新会话默认命名为编号
-39. [x] 扩充常用股票候选池并优化模型加载按钮布局
-40. [x] 将 AI 自动下载数据隔离到 LLM workspace
-41. [x] 在 Data Setup 增加 AI workspace 状态、清空和合并到主项目功能
-42. [x] 修复 workspace 股票无法运行 baseline 策略的问题
-43. [x] 接入 RSI baseline 到 tools、LLM 和 Streamlit
-44. [x] 生成统一策略对比表，并接入 tools、LLM 和 Streamlit
-45. [x] 增加 LLM 将 AI workspace 数据 push 到其他页面查看的功能
-46. [x] 删除 merged_stock_data 依赖，改为直接从单个 raw CSV 生成 processed
-47. [x] 数据加载界面接入可搜索的美股代码目录，并将下载文案改为加载
-48. [x] 重构 AI workspace：raw 共用，processed/results 按 Chat 隔离
-49. [x] 增加 LLM 股票候选筛选工具和 shortlist 加载工具
-50. [x] 增加 Streamlit Community 友好的临时 runtime 存储和 SQLite 数据集记录
-51. [x] 将 Web 数据加载代理默认值改为部署友好的关闭状态
-52. [x] 修复 EDA 在 runtime 存储下仍读取旧 data/processed 默认路径的问题
-53. [x] 修复 baseline 在 runtime 存储下仍读取旧 processed 默认路径的问题
-54. [x] 改进 yfinance 空数据/限流时的数据加载错误提示
-55. [x] 防止 run_app.py 被误作为 Streamlit Cloud 入口后递归启动多个端口
-56. [x] 为在线数据加载增加 Yahoo chart fallback，并避免云端误用本机 Clash 代理
-57. [x] 修复 LLM 主题股票筛选时可能出现的 Date 列错误，并增强芯片/半导体主题候选池
-58. [x] 增加 LLM 意图级自动分析工具，减少对本地缓存/下载确认的依赖
-59. [x] 修复空主项目数据下图表/历史工具读取 Ticker 列的问题
-60. [x] 增加 Tool Proposal 机制，让 Agent 可生成新工具草案供开发者审阅
-61. [x] 增加本地 Tool Promotion 流程，将审阅后的 proposal 合并为可部署工具
-62. [x] 增加本地 LLM 指令式工具合并入口，并支持当前本地运行环境刷新 generated 工具
-63. [x] 增加网页端 session-scoped 临时组合工具，允许安全复用既有工具配置
-64. [x] 理顺 active dataset / EDA figures 数据流，AI 与手动加载后无需手动 merge 即可查看
-65. [x] 从 Data Setup 普通操作中移除 Clear AI workspace，并将 merge 收进开发者入口
-66. [x] 增加轻量 Portfolio CEM 训练模块，并接入 tools、LLM 和 Streamlit
-67. [x] 将 Portfolio CEM 纳入统一策略对比表，区分单资产和组合层级结果
-68. [x] 增加项目能力说明工具，让 LLM 能清晰回答“你可以做什么”
-69. [x] 将 AI Assistant 调用改为后台任务，降低切换页面导致请求中断的概率
-70. [x] 完成项目体检：补 README、更新架构文档、检查入口/依赖/部署说明
-71. [x] 写最终报告和 AI Assistant 使用说明
-72. [x] 最终端到端验收测试
-73. [x] 修复 AI Assistant 跨页面状态保留和 Chat workspace 连续训练上下文问题
-74. [x] 将开发者工具页默认隐藏，简化普通 Web 使用界面
-75. [x] 增加 LLM pending job 自动刷新，并防止 Portfolio CEM 后续确认时误用非 workspace 股票
-76. [x] 将 LLM pending job 轮询从阻塞式整页 rerun 改为 Streamlit fragment 局部刷新
-77. [x] 增加统一导出功能，将图片、数据、策略结果和模型文件打包为 ZIP
-78. [x] 增加 artifact 提取码，支持按具体图片、数据或策略结果精准导出
-79. [x] 将存储模式拆分为本地持久 data/reports/models 与 Web session runtime
-80. [x] 增加基本面 / 大盘 Web Research Agent，并接入 LLM 工具和导出系统
+# TODO
+
+This file is the short actionable backlog. Keep completed history out of this file unless it matters for the next task. For full history, use docs/AI_USAGE_LOG.md.
+
+## Current Status
+
+- [x] Data loading, feature engineering, EDA, risk analytics, strategy baselines, Portfolio CEM, LLM tools, Research Agent, unified report builder, export system, and Streamlit UI are implemented.
+- [x] Main Web pages are simplified to: Data, Explorer, Analysis, Research, Strategy Lab, Report, AI Assistant, Export.
+- [x] Local storage and Web session storage are separated through FINTECH_STORAGE_MODE.
+- [x] Initial deterministic smoke tests cover runtime storage, risk analytics, CSV upload, report builder, strategy comparison, export ZIP, and LLM risk-tool registration.
+- [x] Research Agent outputs structured citations with source quality scores for fundamentals, macro proxies, and Yahoo Finance RSS headlines.
+- [x] CSV upload can import user OHLCV/Close data into the same feature, EDA, risk, baseline, report, and export pipeline.
+- [x] AI Assistant has a lightweight background job dashboard with status counts, recent jobs, errors, tool counts, and log paths.
+- [x] Session-mode deployment hardening includes old-session cleanup, runtime diagnostics, and no API-key persistence in Web/session mode.
+
+## Next Recommended Work
+
+1. [ ] Extend deterministic tests.
+   - Add mocked data-refresh tests.
+   - Add Portfolio CEM smoke test with tiny synthetic data.
+   - Add tests for active dataset pointer and Chat workspace scope.
+
+2. [ ] Extend risk analytics with sector concentration.
+   - Add sector metadata where available.
+   - Summarize concentration by sector/theme in Analysis and reports.
+
+3. [ ] Add optional paid/free search-provider abstraction for Research Agent.
+   - Candidate providers: Tavily, Brave, SerpAPI, or custom search API.
+   - Keep current no-key yfinance/Yahoo citation path as fallback.
+
+4. [ ] Export/report retention polish.
+   - Add optional separate expiry controls for old ZIP exports and generated reports.
+   - Keep current session cleanup as the default broad cleanup mechanism.
+
+## Maintenance Rules
+
+- Add only near-term actionable work here.
+- Mark an item done when code and basic verification are complete.
+- Update PROJECT_PLAN.md when a new module changes architecture or user-facing behavior.
+- Update docs/PROJECT_STRUCTURE.md when files or module responsibilities change.
+- Do not use this file as a long chronological changelog.

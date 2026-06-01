@@ -38,6 +38,7 @@ STREAMLIT_CLOUD_ENV_KEYS = [
     "STREAMLIT_CLOUD_APP_NAME",
     "STREAMLIT_CLOUD_APP_URL",
 ]
+DEFAULT_SESSION_CLEANUP_HOURS = int(os.getenv("FINTECH_SESSION_CLEANUP_HOURS", "24"))
 POPULAR_TICKERS = [
     "AAPL",
     "ABBV",
@@ -171,6 +172,9 @@ def init_app_storage():
         session_id=st.session_state["web_session_id"],
         root=runtime_root,
     )
+    if not st.session_state.get("runtime_cleanup_checked"):
+        market_tools.cleanup_runtime_sessions(max_age_hours=DEFAULT_SESSION_CLEANUP_HOURS)
+        st.session_state["runtime_cleanup_checked"] = True
     CONFIG_DIR = Path(paths["config_dir"])
     LLM_PREFERENCES_FILE = CONFIG_DIR / "llm_preferences.json"
     LLM_CHATS_FILE = CONFIG_DIR / "llm_chats.json"
@@ -204,6 +208,24 @@ def load_summary(path):
 
 def clear_cache():
     st.cache_data.clear()
+
+
+def render_dataset_required(active_status, page_name):
+    dataset = active_status.get("dataset", {})
+    if dataset.get("available"):
+        return True
+
+    st.warning(f"{page_name} needs a loaded analysis dataset first.")
+    st.info(
+        "Open the Data page, choose tickers and a date range, then click Load Data. "
+        "You can also ask the AI Assistant to prepare data for specific tickers."
+    )
+    with st.expander("Dataset details", expanded=False):
+        st.write(dataset.get("message", "No processed dataset is currently active."))
+        st.caption(f"Expected processed file: {active_status.get('processed_file')}")
+        if active_status.get("note"):
+            st.caption(f"Current source note: {active_status['note']}")
+    return False
 
 
 @st.cache_data(show_spinner=False, ttl=30)
@@ -386,6 +408,30 @@ def read_json_file(path):
         return None
 
 
+def parse_iso_datetime(value):
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(str(value))
+    except Exception:
+        return None
+
+
+def format_duration_seconds(started_at, updated_at=None):
+    start = parse_iso_datetime(started_at)
+    if not start:
+        return "N/A"
+    end = parse_iso_datetime(updated_at) or datetime.now()
+    seconds = max(0, int((end - start).total_seconds()))
+    minutes, seconds = divmod(seconds, 60)
+    hours, minutes = divmod(minutes, 60)
+    if hours:
+        return f"{hours}h {minutes}m {seconds}s"
+    if minutes:
+        return f"{minutes}m {seconds}s"
+    return f"{seconds}s"
+
+
 def write_llm_job_status(job_file, status, **fields):
     payload = {
         "status": status,
@@ -397,12 +443,15 @@ def write_llm_job_status(job_file, status, **fields):
 
 
 def run_llm_job_in_background(job_file, storage_mode, runtime_session_id, runtime_root, chat_id, question, llm_kwargs):
+    job_id = Path(job_file).stem
+    started_at = datetime.now().isoformat(timespec="seconds")
     write_llm_job_status(
         job_file,
         "running",
+        job_id=job_id,
         chat_id=chat_id,
         question=question,
-        started_at=datetime.now().isoformat(timespec="seconds"),
+        started_at=started_at,
     )
     try:
         if storage_mode == "session":
@@ -412,8 +461,10 @@ def run_llm_job_in_background(job_file, storage_mode, runtime_session_id, runtim
         write_llm_job_status(
             job_file,
             "failed",
+            job_id=job_id,
             chat_id=chat_id,
             question=question,
+            started_at=started_at,
             error=str(exc),
             traceback=traceback.format_exc(),
         )
@@ -421,8 +472,10 @@ def run_llm_job_in_background(job_file, storage_mode, runtime_session_id, runtim
         write_llm_job_status(
             job_file,
             "completed",
+            job_id=job_id,
             chat_id=chat_id,
             question=question,
+            started_at=started_at,
             result=sanitize_llm_result_for_storage(result),
         )
 
@@ -440,7 +493,7 @@ def start_llm_background_job(chat, question, llm_kwargs):
         "started_at": now,
     }
     chat["updated_at"] = now
-    write_llm_job_status(job_file, "queued", chat_id=chat["id"], question=question, started_at=now)
+    write_llm_job_status(job_file, "queued", job_id=job_id, chat_id=chat["id"], question=question, started_at=now)
     save_llm_chats_to_disk()
 
     worker = threading.Thread(
@@ -494,6 +547,92 @@ def reconcile_llm_job(chat):
         chat.pop("pending_job", None)
         save_llm_chats_to_disk()
     return job_status
+
+
+def list_llm_job_statuses(limit=50):
+    if not LLM_JOBS_DIR.exists():
+        return []
+
+    jobs = []
+    for path in sorted(LLM_JOBS_DIR.glob("*.json"), key=lambda item: item.stat().st_mtime, reverse=True):
+        payload = read_json_file(path)
+        if not payload:
+            continue
+        payload = dict(payload)
+        payload.setdefault("job_id", path.stem)
+        payload["job_file"] = str(path)
+        payload["duration"] = format_duration_seconds(payload.get("started_at"), payload.get("updated_at"))
+        result = payload.get("result") or {}
+        payload["tool_count"] = len(result.get("tools") or [])
+        payload["log_path"] = result.get("log_path")
+        jobs.append(payload)
+        if limit and len(jobs) >= int(limit):
+            break
+    return jobs
+
+
+def cleanup_finished_llm_jobs():
+    removed = 0
+    for job in list_llm_job_statuses(limit=1000):
+        if job.get("status") in {"completed", "failed", "unknown"}:
+            try:
+                Path(job["job_file"]).unlink()
+                removed += 1
+            except Exception:
+                pass
+    return removed
+
+
+def render_llm_job_dashboard():
+    jobs = list_llm_job_statuses(limit=100)
+    if not jobs:
+        st.info("No background LLM jobs yet.")
+        return
+
+    status_counts = {}
+    for job in jobs:
+        status = job.get("status", "unknown")
+        status_counts[status] = status_counts.get(status, 0) + 1
+
+    cols = st.columns(4)
+    for index, status in enumerate(["queued", "running", "completed", "failed"]):
+        cols[index].metric(status.title(), status_counts.get(status, 0))
+
+    if st.button("Clear completed/failed job records", use_container_width=True):
+        removed = cleanup_finished_llm_jobs()
+        st.success(f"Removed {removed} finished job record(s).")
+        st.rerun()
+
+    rows = []
+    chat_titles = {
+        chat_id: chat.get("title", chat_id)
+        for chat_id, chat in st.session_state.get("llm_chats", {}).items()
+    }
+    for job in jobs:
+        question = str(job.get("question") or "")
+        rows.append(
+            {
+                "job_id": job.get("job_id"),
+                "status": job.get("status"),
+                "chat": chat_titles.get(job.get("chat_id"), job.get("chat_id")),
+                "duration": job.get("duration"),
+                "updated_at": job.get("updated_at"),
+                "tools": job.get("tool_count", 0),
+                "question": question[:140],
+            }
+        )
+    st.dataframe(pd.DataFrame(rows), use_container_width=True, height=280)
+
+    selected_job_id = st.selectbox("Inspect job", [job["job_id"] for job in jobs])
+    selected = next(job for job in jobs if job["job_id"] == selected_job_id)
+    with st.expander("Job details", expanded=True):
+        st.json(selected)
+        if selected.get("error"):
+            st.error(selected["error"])
+        if selected.get("traceback"):
+            st.code(selected["traceback"], language="text")
+        if selected.get("log_path"):
+            st.caption(f"Debug log: {selected['log_path']}")
 
 
 @st.fragment(run_every="3s")
@@ -708,8 +847,23 @@ def show_current_data_snapshot():
     active = inventory["active_analysis_dataset"]
     processed = inventory["processed_dataset"]
     raw_files = inventory["raw_files"]
+    active_dataset = active.get("dataset", {})
 
-    with st.expander("Current data snapshot", expanded=True):
+    st.markdown("**Current Dataset**")
+    if active_dataset.get("available"):
+        col1, col2, col3, col4 = st.columns(4)
+        col1.metric("Rows", f"{active_dataset['rows']:,}")
+        col2.metric("Tickers", active_dataset["ticker_count"])
+        col3.metric("Start", active_dataset["start_date"])
+        col4.metric("End", active_dataset["end_date"])
+        st.caption(f"Tickers: {', '.join(active_dataset['tickers'])}")
+    else:
+        st.info(active_dataset.get("message", "No active dataset is currently loaded."))
+
+    if active.get("note"):
+        st.caption(f"Current source note: {active['note']}")
+
+    with st.expander("Advanced data details", expanded=False):
         if runtime_status.get("enabled"):
             st.caption(
                 "Session runtime storage: "
@@ -717,53 +871,35 @@ def show_current_data_snapshot():
             )
         else:
             st.caption("Local persistent storage: using project data/, reports/, models/, and config/ folders.")
-        active_dataset = active.get("dataset", {})
-        st.write(
-            "Active app dataset: "
-            f"{active['label']} "
-            f"({active['processed_file']})."
-        )
-        if active_dataset.get("available"):
-            st.caption(
-                f"Active tickers: {', '.join(active_dataset['tickers'])} "
-                f"({active_dataset['start_date']} to {active_dataset['end_date']}, "
-                f"{active_dataset['rows']:,} rows)."
-            )
-        else:
-            st.caption(active_dataset.get("message", "Active dataset is not available."))
-        if active.get("note"):
-            st.caption(f"Note: {active['note']}")
-        st.divider()
 
+        st.write(f"Active dataset file: {active['processed_file']}")
         if processed["available"]:
             st.write(
-                "Current processed dataset: "
+                "Main processed dataset: "
                 f"{', '.join(processed['tickers'])} "
                 f"({processed['start_date']} to {processed['end_date']}, "
                 f"{processed['rows']:,} rows)."
             )
         else:
-            st.info("No processed dataset is currently loaded.")
+            st.info("No main processed dataset is currently loaded.")
 
         raw_tickers = raw_files.get("tickers", [])
         raw_only_tickers = inventory.get("raw_only_tickers", [])
         col1, col2 = st.columns(2)
-        col1.metric("Session raw tickers", len(raw_tickers))
+        col1.metric("Raw tickers", len(raw_tickers))
         col2.metric("Raw-only tickers", len(raw_only_tickers))
-
         if raw_only_tickers:
-            st.caption("Raw-only tickers are available in this Web session cache but are not part of the current processed dataset.")
+            st.caption("Raw-only tickers are cached but are not part of the current processed dataset.")
             st.write(", ".join(raw_only_tickers))
 
         raw_records = raw_files.get("records", [])
         if raw_records:
-            with st.expander("Raw file details", expanded=False):
-                st.dataframe(pd.DataFrame(raw_records), use_container_width=True, height=300)
+            st.dataframe(pd.DataFrame(raw_records), use_container_width=True, height=260)
 
         workspace = inventory.get("llm_workspace", {})
         workspace_processed = workspace.get("processed_dataset", {})
         st.divider()
-        st.write("Current AI chat workspace:")
+        st.write("Current AI chat workspace")
         st.caption(f"Workspace: {workspace.get('workspace_dir', 'N/A')}")
         if workspace_processed.get("available"):
             st.write(
@@ -774,56 +910,47 @@ def show_current_data_snapshot():
         else:
             st.caption("No AI chat workspace processed dataset yet.")
 
-        if runtime_status.get("enabled"):
-            st.caption("Raw market data is scoped to this Web session. Chat processed/results are isolated per chat.")
-        else:
-            st.caption("Raw market data is stored persistently under data/raw/. Chat processed/results are isolated per chat under data/workspaces/.")
-
 
 def page_data_setup(df):
-    st.subheader("Data Setup")
-    st.write("Load local cached data when available, or fetch missing market data for selected tickers and dates.")
+    st.subheader("Data")
+    st.write("Load market data for the tickers and date range you want to analyze.")
 
     status = market_tools.get_dataset_status()
-    show_status_cards(status)
     show_current_data_snapshot()
 
     active_status = market_tools.get_active_analysis_dataset_status()
     if active_status["source"] != "project":
-        col_reset, col_merge = st.columns(2)
-        if col_reset.button("Show main loaded dataset", use_container_width=True):
+        if st.button("Use main loaded dataset", use_container_width=True):
             result = market_tools.reset_app_pages_to_project_dataset()
             clear_cache()
             st.success(result["message"])
             st.rerun()
-        with col_merge.expander("Developer merge"):
-            st.caption("Optional: copy the active AI workspace into the main project dataset.")
-            if st.button("Merge active AI workspace", use_container_width=True):
-                with st.spinner("Merging AI chat workspace data into the main project dataset..."):
-                    try:
-                        result = market_tools.merge_llm_workspace_to_project(chat_id=active_status.get("chat_id"))
-                    except Exception as exc:
-                        st.error(f"Merge failed: {exc}")
-                    else:
-                        clear_cache()
-                        st.success("AI chat workspace data merged into project dataset.")
-                        st.json(result)
-                        st.rerun()
 
-    with st.expander("Load market data", expanded=False):
-        st.session_state.setdefault("symbol_refresh_token", 0)
-        col_symbols, col_refresh = st.columns([4, 1])
-        ticker_options, symbol_status = get_load_ticker_options(st.session_state["symbol_refresh_token"])
-        source_label = symbol_status.get("source", "symbol cache")
-        row_count = symbol_status.get("rows", len(ticker_options))
-        col_symbols.caption(f"Ticker universe: {row_count:,} symbols from {source_label}. You can still type any yfinance ticker manually.")
-        if symbol_status.get("error"):
-            col_symbols.warning(f"Symbol list refresh failed; using fallback options. {symbol_status['error']}")
-        if col_refresh.button("Refresh symbols", use_container_width=True):
-            st.session_state["symbol_refresh_token"] += 1
-            st.cache_data.clear()
-            st.rerun()
+        if st.session_state.get("show_developer_tools"):
+            with st.expander("Developer merge", expanded=False):
+                st.caption("Optional: copy the active AI workspace into the main project dataset.")
+                if st.button("Merge active AI workspace", use_container_width=True):
+                    with st.spinner("Merging AI chat workspace data into the main project dataset..."):
+                        try:
+                            result = market_tools.merge_llm_workspace_to_project(chat_id=active_status.get("chat_id"))
+                        except Exception as exc:
+                            st.error(f"Merge failed: {exc}")
+                        else:
+                            clear_cache()
+                            st.success("AI chat workspace data merged into project dataset.")
+                            st.json(result)
+                            st.rerun()
 
+    st.divider()
+    st.markdown("**Load Data**")
+    st.session_state.setdefault("symbol_refresh_token", 0)
+    ticker_options, symbol_status = get_load_ticker_options(st.session_state["symbol_refresh_token"])
+    if symbol_status.get("error"):
+        st.warning(f"Symbol list refresh failed; using fallback options. {symbol_status['error']}")
+
+    download_tab, upload_tab = st.tabs(["Yahoo / yfinance", "Upload CSV"])
+
+    with download_tab:
         with st.form("download_form"):
             selected_ticker_values = st.multiselect(
                 "Tickers",
@@ -837,20 +964,27 @@ def page_data_setup(df):
             col1, col2 = st.columns(2)
             start_date = col1.date_input("Start date", value=pd.to_datetime("2015-01-01"))
             end_date = col2.date_input("End date", value=pd.to_datetime("2025-12-31"))
-            use_proxy = st.checkbox(
-                "Use Clash proxy",
-                value=os.getenv("USE_PROXY", "false").lower() in {"1", "true", "yes"},
-                help="Only works when the server running this app has CLASH_PROXY configured. Your local Clash cannot be used by Streamlit Community.",
-            )
-            data_source_label = st.selectbox(
-                "Data source",
-                ["Auto (use local if valid)", "Online (download from yfinance)"],
-                help="Auto reuses valid local raw CSV files first, then downloads only when needed.",
-            )
+            with st.expander("Advanced loading options", expanded=False):
+                row_count = symbol_status.get("rows", len(ticker_options))
+                st.caption(f"Ticker universe: {row_count:,} symbols. You can still type any yfinance ticker manually.")
+                use_proxy = st.checkbox(
+                    "Use Clash proxy",
+                    value=os.getenv("USE_PROXY", "false").lower() in {"1", "true", "yes"},
+                    help="Only works when the server running this app has CLASH_PROXY configured. Your local Clash cannot be used by Streamlit Community.",
+                )
+                data_source_label = st.selectbox(
+                    "Data source",
+                    ["Auto (use local if valid)", "Online (download from yfinance)"],
+                    help="Auto reuses valid local raw CSV files first, then downloads only when needed.",
+                )
+                refresh_symbols = st.checkbox("Refresh ticker universe before next load", value=False)
             data_source = "auto" if data_source_label.startswith("Auto") else "download"
-            submitted = st.form_submit_button("Load & Process Data", type="primary")
+            submitted = st.form_submit_button("Load Data", type="primary")
 
         if submitted:
+            if refresh_symbols:
+                st.session_state["symbol_refresh_token"] += 1
+                st.cache_data.clear()
             selected_tickers = parse_selected_ticker_options(selected_ticker_values)
             if not selected_tickers:
                 st.error("Please select at least one ticker.")
@@ -858,7 +992,7 @@ def page_data_setup(df):
                 st.error("Start date must be earlier than end date.")
             else:
                 st.info(f"Requested tickers: {', '.join(selected_tickers)}")
-                with st.spinner("Refreshing market data, features, EDA artifacts, and baselines..."):
+                with st.spinner("Loading market data, features, EDA artifacts, and baselines..."):
                     try:
                         result = market_tools.refresh_market_data(
                             tickers=selected_tickers,
@@ -873,9 +1007,44 @@ def page_data_setup(df):
                     else:
                         market_tools.reset_app_pages_to_project_dataset(note="Activated newly loaded market data.")
                         clear_cache()
-                        st.success("Data refresh completed.")
-                        st.json(result)
+                        st.success("Data loaded.")
+                        with st.expander("Load details", expanded=False):
+                            st.json(result)
                         st.rerun()
+
+    with upload_tab:
+        st.caption("Upload a CSV with Date, Close, and either Ticker/Symbol or a single default ticker. Open/High/Low/Volume are optional.")
+        uploaded_file = st.file_uploader("Price CSV", type=["csv"])
+        default_upload_ticker = st.text_input("Default ticker for single-ticker CSV", placeholder="e.g. AAPL")
+        if uploaded_file is not None:
+            try:
+                preview = pd.read_csv(uploaded_file, nrows=20)
+                uploaded_file.seek(0)
+            except Exception as exc:
+                st.error(f"Could not read CSV preview: {exc}")
+                preview = pd.DataFrame()
+            if not preview.empty:
+                st.dataframe(preview, use_container_width=True, height=240)
+
+        if st.button("Import Uploaded CSV", type="primary", disabled=uploaded_file is None):
+            with st.spinner("Importing uploaded CSV, generating features, EDA, risk, and baselines..."):
+                try:
+                    uploaded_file.seek(0)
+                    result = market_tools.import_uploaded_price_data(
+                        uploaded_file=uploaded_file,
+                        default_ticker=default_upload_ticker,
+                        run_eda_after=True,
+                        run_baseline_after=True,
+                    )
+                except Exception as exc:
+                    st.error(f"CSV import failed: {exc}")
+                else:
+                    market_tools.reset_app_pages_to_project_dataset(note="Activated uploaded CSV dataset.")
+                    clear_cache()
+                    st.success("Uploaded CSV imported.")
+                    with st.expander("Import details", expanded=False):
+                        st.json(result)
+                    st.rerun()
 
     if not df.empty:
         with st.expander("Processed data preview", expanded=False):
@@ -884,9 +1053,9 @@ def page_data_setup(df):
 
 
 def page_explorer(df):
-    st.subheader("Interactive Data Explorer")
+    st.subheader("Explorer")
     if df.empty:
-        st.warning("No processed data available.")
+        render_dataset_required(market_tools.get_active_analysis_dataset_status(), "Explorer")
         return
 
     tickers = sorted(df["Ticker"].unique())
@@ -917,13 +1086,17 @@ def page_explorer(df):
 
 
 def page_eda():
-    st.subheader("EDA Results")
+    st.subheader("Analysis")
 
     active_status = market_tools.get_active_analysis_dataset_status()
-    st.caption(f"Using {active_status['label']}: {active_status['processed_file']}")
+    st.caption(f"Using {active_status['label']}")
+    if not render_dataset_required(active_status, "Analysis"):
+        return
     eda_summary = load_summary(active_status["eda_summary_file"])
     quality_summary = load_summary(active_status["data_quality_file"])
-    tab1, tab2, tab3 = st.tabs(["Asset Summary", "Data Quality", "Figures"])
+    risk_summary = load_summary(active_status["risk_summary_file"])
+    risk_rolling = load_summary(active_status["risk_rolling_file"])
+    tab1, tab2, tab3, tab4 = st.tabs(["Asset Summary", "Data Quality", "Risk", "Figures"])
 
     with tab1:
         if eda_summary.empty:
@@ -938,6 +1111,38 @@ def page_eda():
             st.dataframe(quality_summary, use_container_width=True, height=420)
 
     with tab3:
+        risk_col_a, risk_col_b, risk_col_c = st.columns([1, 1, 2])
+        benchmark = risk_col_a.text_input("Benchmark", value="SPY")
+        rolling_window = risk_col_b.number_input("Rolling window", min_value=5, max_value=252, value=20, step=5)
+        if risk_col_c.button("Run risk analysis", use_container_width=True):
+            with st.spinner("Calculating risk metrics..."):
+                result = market_tools.run_risk_analysis(
+                    data_scope="active",
+                    benchmark_ticker=benchmark,
+                    rolling_window=rolling_window,
+                )
+                clear_cache()
+                if result["available"]:
+                    st.success("Risk analysis updated.")
+                else:
+                    st.warning(result["message"])
+                st.json(result)
+                st.rerun()
+
+        if risk_summary.empty:
+            st.info("Risk summary is not available yet. Run risk analysis after loading data.")
+        else:
+            st.dataframe(risk_summary, use_container_width=True, height=360)
+            if not risk_rolling.empty and {"Date", "Ticker", "Rolling_Volatility"}.issubset(risk_rolling.columns):
+                risk_tickers = sorted(risk_rolling["Ticker"].dropna().unique().tolist())
+                selected_risk_ticker = st.selectbox("Rolling risk ticker", risk_tickers)
+                rolling_view = risk_rolling[risk_rolling["Ticker"] == selected_risk_ticker].copy()
+                rolling_view["Date"] = pd.to_datetime(rolling_view["Date"])
+                columns = [column for column in ["Rolling_Volatility", "Rolling_Sharpe", "Drawdown"] if column in rolling_view.columns]
+                if columns:
+                    st.line_chart(rolling_view.set_index("Date")[columns])
+
+    with tab4:
         figure_result = market_tools.list_available_figures(data_scope="active")
         figures = figure_result["figures"]
         if not figures:
@@ -1094,23 +1299,31 @@ def page_ai_assistant():
             st.session_state["llm_request_timeout"] = request_timeout
         save_debug_log = st.checkbox("Save debug log", key="llm_widget_save_debug_log")
         st.session_state["llm_save_debug_log"] = save_debug_log
+        session_storage = st.session_state.get("storage_mode") == "session"
+        if session_storage:
+            st.session_state["llm_widget_remember_api_key"] = False
         remember_api_key = st.checkbox(
             "Remember API key locally",
             key="llm_widget_remember_api_key",
-            help=f"Stores the key as plain text in {LLM_PREFERENCES_FILE}. Leave off on shared machines.",
+            disabled=session_storage,
+            help=(
+                "Disabled in Web/session mode so API keys are not written to temporary deployment storage."
+                if session_storage
+                else f"Stores the key as plain text in {LLM_PREFERENCES_FILE}. Leave off on shared machines."
+            ),
         )
-        st.session_state["llm_remember_api_key"] = remember_api_key
+        st.session_state["llm_remember_api_key"] = False if session_storage else remember_api_key
         if st.button("Save LLM settings"):
             save_llm_preferences(
                 {
                     "provider_name": provider_name,
                     "base_url": base_url,
                     "model": model,
-                    "remember_api_key": bool(remember_api_key),
-                    "api_key": api_key if remember_api_key else "",
+                    "remember_api_key": bool(st.session_state["llm_remember_api_key"]),
+                    "api_key": api_key if st.session_state["llm_remember_api_key"] else "",
                 }
             )
-            st.success("LLM settings saved locally.")
+            st.success("LLM settings saved. API key was not saved." if session_storage else "LLM settings saved locally.")
 
         allow_write_tools = True
         if st.session_state.get("storage_mode") == "session":
@@ -1126,6 +1339,9 @@ def page_ai_assistant():
         pending_job = chat.get("pending_job")
         if pending_job:
             render_llm_pending_job_status(chat["id"])
+
+        with st.expander("Background job dashboard", expanded=False):
+            render_llm_job_dashboard()
 
         question = st.text_area("Question", height=120, key=f"question_{chat['id']}")
 
@@ -1161,16 +1377,18 @@ def page_ai_assistant():
 
 
 def page_baselines():
-    st.subheader("Baseline Strategy Results")
-    st.write("Current strategies: Buy & Hold, Moving Average crossover, RSI threshold strategy, and lightweight Portfolio CEM.")
+    st.subheader("Strategy Lab")
+    st.write("Compare traditional strategy baselines with the lightweight Portfolio CEM policy.")
 
     active_status = market_tools.get_active_analysis_dataset_status()
+    if not render_dataset_required(active_status, "Strategy Lab"):
+        return
     active_source = active_status["source"]
     active_is_workspace = active_source in {"llm_workspace", "chat_workspace"}
     active_chat_id = active_status.get("chat_id")
     workspace_paths = market_tools.get_chat_workspace_paths(active_chat_id)
     data_scope = "workspace" if active_is_workspace else "project"
-    st.caption(f"Using {active_status['label']}: {active_status['processed_file']}")
+    st.caption(f"Using {active_status['label']}")
 
     st.markdown("**Unified Strategy Comparison**")
     comparison_file = (
@@ -1284,11 +1502,42 @@ def format_bytes(size_bytes):
         size /= 1024
 
 
+def page_runtime_diagnostics():
+    st.subheader("Runtime Diagnostics")
+    diagnostics = market_tools.get_runtime_diagnostics()
+    if not diagnostics.get("enabled"):
+        st.info("Runtime session storage is not active. Local mode uses persistent project folders.")
+        return
+
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Sessions", diagnostics.get("session_count", 0))
+    col2.metric("Runtime size", format_bytes(diagnostics.get("root_size_bytes", 0)))
+    col3.metric("Current session", diagnostics.get("current_session_id", "N/A"))
+    st.caption(f"Runtime root: {diagnostics.get('root')}")
+
+    sessions = pd.DataFrame(diagnostics.get("sessions", []))
+    if not sessions.empty:
+        sessions["size"] = sessions["size_bytes"].map(format_bytes)
+        st.dataframe(
+            sessions[["session_id", "is_current", "size", "modified_at"]],
+            use_container_width=True,
+            height=260,
+        )
+
+    cleanup_hours = st.number_input("Delete sessions older than hours", min_value=1, max_value=24 * 30, value=DEFAULT_SESSION_CLEANUP_HOURS)
+    if st.button("Run session cleanup", type="primary"):
+        result = market_tools.cleanup_runtime_sessions(max_age_hours=cleanup_hours)
+        st.success(f"Removed {result.get('removed_count', 0)} old session(s).")
+        st.json(result)
+
+
 def page_exports():
-    st.subheader("Export Artifacts")
-    st.write("Create a ZIP package with generated data, figures, strategy results, and portfolio policy files.")
+    st.subheader("Export")
+    st.write("Create a ZIP package with selected data, figures, research reports, strategy results, and policy files.")
 
     active_status = market_tools.get_active_analysis_dataset_status()
+    if not render_dataset_required(active_status, "Report Builder"):
+        return
     current_chat = get_current_llm_chat()
     scope_options = {
         "Active app dataset": "active",
@@ -1312,10 +1561,11 @@ def page_exports():
     include_results = col4.checkbox("Strategy results", value=True)
     include_models = col5.checkbox("Models", value=True)
     include_research = st.checkbox("Research reports", value=True)
+    include_reports = st.checkbox("Unified reports", value=True)
     col_filter, col_query = st.columns([1, 2])
     category_filter_label = col_filter.selectbox(
-        "Artifact type",
-        ["All", "data", "raw_data", "figures", "results", "models", "research"],
+        "File type",
+        ["All", "data", "raw_data", "figures", "results", "models", "research", "reports"],
     )
     artifact_query = col_query.text_input(
         "Filter by extraction code or file name",
@@ -1332,6 +1582,7 @@ def page_exports():
         include_strategy_results=include_results,
         include_models=include_models,
         include_research=include_research,
+        include_reports=include_reports,
         category=category_filter,
         query=artifact_query,
     )
@@ -1350,11 +1601,11 @@ def page_exports():
             for record in inventory["records"]
         }
         selected_codes = st.multiselect(
-            "Precise extraction codes",
+            "Files",
             list(option_labels.keys()),
             default=list(option_labels.keys()),
             format_func=lambda code: option_labels[code],
-            help="Use these codes to export one specific image, dataset, strategy result, or model artifact.",
+            help="Each file has a stable code so the AI Assistant can export it precisely.",
         )
         with st.expander("Files to export", expanded=False):
             st.dataframe(pd.DataFrame(inventory["records"]), use_container_width=True, height=300)
@@ -1373,6 +1624,7 @@ def page_exports():
             include_strategy_results=include_results,
             include_models=include_models,
             include_research=include_research,
+            include_reports=include_reports,
             artifact_codes=selected_codes,
             category=category_filter,
             query=artifact_query,
@@ -1396,9 +1648,75 @@ def page_exports():
         st.caption(f"Saved at: {export_path}")
 
 
+def page_report_builder():
+    st.subheader("Report")
+    st.write("Build one Markdown report from the active dataset, EDA, research context, strategy comparison, and Portfolio CEM results.")
+
+    active_status = market_tools.get_active_analysis_dataset_status()
+    current_chat = get_current_llm_chat()
+    scope_options = {
+        "Active app dataset": "active",
+        "Main project dataset": "project",
+        "Current AI chat workspace": "workspace",
+    }
+    col_title, col_scope = st.columns([2, 1])
+    title = col_title.text_input("Report title", value="FinRL Insight Analysis Report")
+    scope_label = col_scope.selectbox("Report scope", list(scope_options.keys()))
+    data_scope = scope_options[scope_label]
+    report_chat_id = current_chat["id"] if data_scope == "workspace" else active_status.get("chat_id")
+
+    col_a, col_b, col_c = st.columns(3)
+    include_research = col_a.checkbox("Include latest research", value=True)
+    include_strategy = col_b.checkbox("Include strategy comparison", value=True)
+    include_portfolio = col_c.checkbox("Include Portfolio CEM", value=True)
+    max_rows = st.slider("Rows per table", min_value=3, max_value=30, value=10, step=1)
+
+    if st.button("Build report", type="primary"):
+        with st.spinner("Building unified report..."):
+            try:
+                result = market_tools.build_unified_report(
+                    title=title,
+                    data_scope=data_scope,
+                    chat_id=report_chat_id,
+                    include_research=include_research,
+                    include_strategy=include_strategy,
+                    include_portfolio=include_portfolio,
+                    max_rows=max_rows,
+                )
+            except Exception as exc:
+                st.error(f"Report build failed: {exc}")
+            else:
+                st.session_state["last_unified_report"] = result
+                st.success("Unified report created.")
+
+    result = st.session_state.get("last_unified_report")
+    if not result:
+        return
+
+    markdown_path = Path(result["markdown_file"])
+    json_path = Path(result["json_file"])
+    st.caption(f"Markdown: {markdown_path}")
+    st.caption(f"JSON: {json_path}")
+
+    if markdown_path.exists():
+        markdown_text = markdown_path.read_text(encoding="utf-8")
+        with st.expander("Report preview", expanded=True):
+            st.markdown(markdown_text)
+        st.download_button(
+            "Download Markdown report",
+            data=markdown_text,
+            file_name=markdown_path.name,
+            mime="text/markdown",
+            use_container_width=True,
+        )
+    if json_path.exists():
+        with st.expander("Report JSON metadata", expanded=False):
+            st.json(result)
+
+
 def page_research_agent():
-    st.subheader("Web Research Agent")
-    st.write("Generate a lightweight research report with fundamentals, broad market context, and recent Yahoo Finance news sources.")
+    st.subheader("Research")
+    st.write("Generate a lightweight report with fundamentals, broad market context, and recent Yahoo Finance news sources.")
 
     active_status = market_tools.get_active_analysis_dataset_status()
     current_chat = get_current_llm_chat()
@@ -1464,6 +1782,27 @@ def page_research_agent():
             url = item.get("url") or ""
             st.markdown(f"- `{item.get('ticker')}` [{title}]({url})")
 
+    citations = pd.DataFrame(result.get("citations", []))
+    if not citations.empty:
+        st.markdown("**Citations**")
+        citation_columns = [
+            column
+            for column in [
+                "citation_id",
+                "category",
+                "ticker",
+                "title",
+                "provider",
+                "source_quality_score",
+                "source_quality_label",
+                "published",
+                "retrieved_at",
+                "url",
+            ]
+            if column in citations.columns
+        ]
+        st.dataframe(citations[citation_columns], use_container_width=True, height=300)
+
     markdown_file = result.get("markdown_file")
     if markdown_file and Path(markdown_file).exists():
         st.download_button(
@@ -1527,6 +1866,7 @@ run_portfolio_env_smoke_test(tickers=None, data_scope="auto", max_steps=5)
 run_portfolio_cem_training(tickers=None, data_scope="auto", generations=4, population_size=12)
 get_portfolio_rl_metrics(data_scope="auto")
 get_portfolio_rl_equity_curve(max_rows=1000, data_scope="auto")
+build_unified_report(title="FinRL Insight Analysis Report", data_scope="active")
 get_fundamental_snapshot(["AAPL", "MSFT"])
 get_macro_market_snapshot(period="6mo")
 get_market_news(["AAPL"], limit_per_ticker=5)
@@ -1598,37 +1938,43 @@ df = load_processed_data(
 
 with st.sidebar:
     page_options = [
-        "Data Setup",
-        "Data Explorer",
-        "EDA Results",
-        "Baseline Results",
-        "Research Agent",
-        "Export Artifacts",
+        "Data",
+        "Explorer",
+        "Analysis",
+        "Research",
+        "Strategy Lab",
+        "Report",
         "AI Assistant",
+        "Export",
     ]
     show_developer_tools = st.checkbox("Developer tools", value=False)
+    st.session_state["show_developer_tools"] = show_developer_tools
     if show_developer_tools:
-        page_options.extend(["LLM Tool API Preview", "Tool Proposals"])
+        page_options.extend(["Runtime Diagnostics", "LLM Tool API Preview", "Tool Proposals"])
 
     page = st.radio(
         "Page",
         page_options,
     )
 
-if page == "Data Setup":
+if page == "Data":
     page_data_setup(df)
-elif page == "Data Explorer":
+elif page == "Explorer":
     page_explorer(df)
-elif page == "EDA Results":
+elif page == "Analysis":
     page_eda()
-elif page == "Baseline Results":
-    page_baselines()
-elif page == "Research Agent":
+elif page == "Research":
     page_research_agent()
-elif page == "Export Artifacts":
-    page_exports()
+elif page == "Strategy Lab":
+    page_baselines()
+elif page == "Report":
+    page_report_builder()
 elif page == "AI Assistant":
     page_ai_assistant()
+elif page == "Export":
+    page_exports()
+elif page == "Runtime Diagnostics":
+    page_runtime_diagnostics()
 elif page == "LLM Tool API Preview":
     page_tool_api_preview()
 else:

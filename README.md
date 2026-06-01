@@ -7,12 +7,15 @@ The project combines market data loading, technical feature engineering, explora
 ## What It Can Do
 
 - Load US stock / ETF market data for user-selected tickers and date ranges.
+- Upload custom CSV price data and run the same analysis pipeline.
 - Generate technical indicators: MA5, MA20, RSI, MACD, daily return, and volatility.
 - Run EDA summaries and charts for the active dataset.
-- Generate lightweight fundamental, macro, and recent-news research reports.
+- Calculate risk analytics such as VaR, CVaR, rolling volatility, rolling Sharpe, drawdown, beta, and benchmark correlation.
+- Generate lightweight fundamental, macro, and recent-news research reports with structured citations.
 - Backtest Buy & Hold, Moving Average crossover, and RSI threshold strategies.
 - Run a multi-asset `PortfolioEnv` and train a lightweight Portfolio CEM policy.
 - Compare traditional single-asset strategies with portfolio-level RL results.
+- Build unified Markdown/JSON reports from active data, EDA, research, strategy, and portfolio results.
 - Let an LLM call local tools to prepare data, create charts, screen candidates, run strategies, and explain results.
 
 The system is for education and research only. It does not provide investment advice.
@@ -35,6 +38,13 @@ docs/                        Architecture and AI usage notes
 reports/                     Local debug logs and optional generated reports
 ```
 
+For maintainers and Codex:
+
+- `PROJECT_PLAN.md` gives the current status, architecture rules, and high-value backlog.
+- `TODO.txt` is the short actionable task list.
+- `docs/PROJECT_ARCHITECTURE.md` explains the current data flow and module boundaries.
+- `docs/PROJECT_STRUCTURE.md` maps folders, files, key functions, and common commands.
+
 ## Local Setup
 
 Use Python 3.12.
@@ -55,6 +65,12 @@ Or run Streamlit directly:
 
 ```bash
 streamlit run app/streamlit_app.py
+```
+
+Run deterministic smoke tests:
+
+```bash
+python -m unittest discover -s tests -v
 ```
 
 ## Streamlit Community Deployment
@@ -87,6 +103,7 @@ Streamlit Community/Web deployments should use temporary session data under:
 ```
 
 This includes per-session raw data, processed feature files, figures, strategy results, model artifacts, LLM chat settings, and LLM background job status.
+Old inactive session folders are cleaned up automatically in session mode. The default age is 24 hours and can be changed with `FINTECH_SESSION_CLEANUP_HOURS`.
 
 Storage mode is controlled by `FINTECH_STORAGE_MODE`:
 
@@ -117,10 +134,14 @@ Remote providers require the user's own API key. Local providers can usually use
 
 LLM calls run as background jobs in the Streamlit app, so switching pages should not interrupt ordinary in-progress requests. If the whole Streamlit process restarts, the background thread is still lost.
 
+The AI Assistant page includes a background job dashboard for recent queued/running/completed/failed LLM jobs, including errors, tool counts, and debug log paths when enabled.
+In Web/session mode, API keys are not persisted even if other LLM settings are saved.
+
 ## Useful Questions
 
 - What can you do?
 - What local data is currently available?
+- Build a unified report for my current analysis.
 - Load NVDA, AMD, and QQQ for the last year and compare strategies.
 - Show Tesla's price chart for the last year.
 - Research Apple's fundamentals and recent market context.
